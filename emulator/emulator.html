@@ -157,6 +157,52 @@
   }
   .bar .spacer{ flex:1 1 auto; }
 
+
+  /* ---- Play surface: chord matrix, strumpad, keyboard ---- */
+  .play-wrap{ display:flex; gap:14px; flex-wrap:wrap; padding:12px 13px; }
+  .matrix{ flex:1 1 420px; }
+  .matrix .cols{ display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
+  .matrix .colhead{
+    font-family:var(--pixel); font-size:calc(8px * var(--ui-scale));
+    text-align:center; color:var(--text-dim); padding:5px 0 7px;
+  }
+  .chordbtn{
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    padding:14px 2px; text-align:center; cursor:pointer; user-select:none;
+    background:linear-gradient(180deg, var(--body-lit) 0%, var(--body) 100%);
+    border:2px solid var(--bezel); color:var(--text); touch-action:none;
+  }
+  .chordbtn.row1{ background:linear-gradient(180deg, var(--body) 0%, var(--body-dark) 100%); }
+  .chordbtn.row2{ background:linear-gradient(180deg, var(--body-dark) 0%, var(--slot) 100%); color:var(--text-dim); }
+  .chordbtn.down, .chordbtn.latched{ background:var(--accent); color:var(--on-accent); }
+
+  .strum{
+    flex:0 0 120px; display:flex; flex-direction:column; gap:2px;
+    touch-action:none; min-height:260px;
+  }
+  .strum .seg{
+    flex:1; border:2px solid var(--bezel); cursor:pointer;
+    background:linear-gradient(90deg, var(--body-dark) 0%, var(--slot) 100%);
+  }
+  .strum .seg.lit{ background:var(--accent); }
+  .strum .label{
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    color:var(--text-dim); text-align:center; padding-bottom:4px;
+  }
+
+  .keys{ display:flex; gap:3px; flex-wrap:wrap; padding:0 13px 12px; }
+  .key{
+    font-family:var(--mono); font-size:calc(10px * var(--ui-scale));
+    min-width:34px; padding:16px 6px 8px; text-align:center; cursor:pointer;
+    background:linear-gradient(180deg, var(--body-lit) 0%, var(--body) 100%);
+    border:2px solid var(--bezel); color:var(--text); user-select:none;
+    touch-action:none;
+  }
+  .key.sharp{ background:linear-gradient(180deg, var(--body-dark) 0%, var(--slot) 100%); color:var(--text-dim); }
+  .key.drum{ background:linear-gradient(180deg, var(--accent-dim) 0%, var(--slot) 100%); }
+  .key.down{ background:var(--accent); color:var(--on-accent); }
+  .key b{ display:block; font-family:var(--pixel); font-size:calc(7px * var(--ui-scale)); opacity:.7; margin-bottom:4px; }
+
   /* ---- Section nav: one band at a time, nothing to scroll past ---- */
   .nav{ gap:6px; }
   .nav button{
@@ -366,6 +412,33 @@
 
   <div id="sections"></div>
 
+
+  <section class="section" id="playSection">
+    <div class="section-head">
+      <h2>Play</h2><span class="scope">chords + harp</span>
+    </div>
+    <p class="section-blurb">Seven roots around the circle of fifths, three chord types, and a strumpad whose twelve notes follow whatever chord is held. Works with a mouse, a finger, or the letter keys.</p>
+    <div class="module">
+      <h2>Chord Matrix</h2>
+      <div class="bar" style="margin:0 13px 10px;">
+        <span class="label">Sharp</span>
+        <div class="switch" id="sharpSw"><div class="led"></div></div>
+        <span class="label">Hold</span>
+        <div class="switch" id="latchSw"><div class="led"></div></div>
+        <span class="spacer"></span>
+        <span class="label" id="chordName">&mdash;</span>
+      </div>
+      <div class="play-wrap">
+        <div class="matrix">
+          <div class="cols" id="colHeads"></div>
+          <div class="cols" id="chordGrid"></div>
+        </div>
+        <div class="strum" id="strum"></div>
+      </div>
+      <div class="keys" id="keys"></div>
+    </div>
+  </section>
+
   <div class="section">
     <div class="section-head">
       <h2>Keyboard</h2><span class="scope">click or type</span>
@@ -506,55 +579,12 @@ startBtn.onclick = startAudio;
 stopBtn.onclick  = stopAudio;
 
 /* ---- playing it ---- */
-function noteOn(note, vel, chan){
-  if (ready) Module.ccall('emu_note_on','null'==='x'?null:null,['number','number','number'],[chan||0, note, vel||100]);
+function playNote(note, vel, chan){
+  if (ready) Module.ccall('emu_note_on', null, ['number','number','number'], [chan||0, note, vel||100]);
 }
-function noteOff(note, chan){
-  if (ready) Module.ccall('emu_note_off',null,['number','number'],[chan||0, note]);
+function stopNote(note, chan){
+  if (ready) Module.ccall('emu_note_off', null, ['number','number'], [chan||0, note]);
 }
-
-// Computer keyboard, two rows laid out like a piano.
-const KEYMAP = {
-  'a':60,'w':61,'s':62,'e':63,'d':64,'f':65,'t':66,'g':67,'y':68,'h':69,
-  'u':70,'j':71,'k':72,'o':73,'l':74,'p':75,';':76,
-  'z':36,'x':38,'c':42,'v':46,'b':35,'n':41,'m':49
-};
-const DRUMKEYS = new Set(['z','x','c','v','b','n','m']);
-const held = new Set();
-window.addEventListener('keydown', e => {
-  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
-  const k = e.key.toLowerCase();
-  if (!(k in KEYMAP) || held.has(k)) return;
-  held.add(k);
-  noteOn(KEYMAP[k], 100, DRUMKEYS.has(k) ? 9 : 0);
-  paintKey(k, true);
-});
-window.addEventListener('keyup', e => {
-  const k = e.key.toLowerCase();
-  if (!held.has(k)) return;
-  held.delete(k);
-  if (!DRUMKEYS.has(k)) noteOff(KEYMAP[k], 0);
-  paintKey(k, false);
-});
-function paintKey(k, on){
-  const el = document.querySelector('[data-key="' + k + '"]');
-  if (el) el.classList.toggle('down', on);
-}
-
-// Clickable keys
-document.addEventListener('pointerdown', e => {
-  const el = e.target.closest('[data-key]');
-  if (!el) return;
-  const k = el.dataset.key;
-  noteOn(KEYMAP[k], 100, DRUMKEYS.has(k) ? 9 : 0);
-  el.classList.add('down');
-  const up = () => {
-    if (!DRUMKEYS.has(k)) noteOff(KEYMAP[k], 0);
-    el.classList.remove('down');
-    window.removeEventListener('pointerup', up);
-  };
-  window.addEventListener('pointerup', up);
-});
 
 // Real MIDI hardware, if the browser offers it.
 if (navigator.requestMIDIAccess){
@@ -563,8 +593,8 @@ if (navigator.requestMIDIAccess){
       inp.onmidimessage = m => {
         const [st, d1, d2] = m.data;
         const ch = st & 0x0F, cmd = st & 0xF0;
-        if (cmd === 0x90 && d2 > 0) noteOn(d1, d2, ch);
-        else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) noteOff(d1, ch);
+        if (cmd === 0x90 && d2 > 0) playNote(d1, d2, ch);
+        else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) stopNote(d1, ch);
       };
     }
     log('sys','MIDI input connected.');
@@ -860,6 +890,232 @@ document.getElementById('importBtn').onclick = () => {
 // the thing to read when notes choke.
 document.getElementById('diagBtn').onclick = () => send('DIAG');
 
+
+/* ==== Play surface ====================================================== */
+// Layout follows the minichord: seven columns of roots around the circle of
+// fifths, three rows for major / minor / 7th, and a sharp modifier that
+// lifts every note a semitone. The strumpad is the harp -- twelve stacked
+// sections whose notes come from the chord currently held.
+
+const ROOTS  = [['F',53],['C',48],['G',55],['D',50],['A',57],['E',52],['B',59]];
+const QUALITY = [
+  { suffix: '',  name: 'maj', tones: [0,4,7]    },
+  { suffix: 'm', name: 'min', tones: [0,3,7]    },
+  { suffix: '7', name: '7th', tones: [0,4,7,10] }
+];
+const STRUM_SEGMENTS = 12;
+
+let sharpOn = false, latchOn = false;
+let heldChord = null;          // {root, quality} currently sounding
+let chordNotes = [];           // midi notes we switched on
+let strumNotes = [];           // the harp ladder for that chord
+let lastStrumSeg = -1, strumming = false;
+
+function chordFor(rootIdx, qIdx){
+  const base = ROOTS[rootIdx][1] + (sharpOn ? 1 : 0);
+  return QUALITY[qIdx].tones.map(t => base + t);
+}
+
+// The harp: chord tones stacked upward until twelve sections are filled, so
+// a strum walks the chord rather than a scale.
+function ladderFor(rootIdx, qIdx){
+  const tones = QUALITY[qIdx].tones;
+  let base = ROOTS[rootIdx][1] + (sharpOn ? 1 : 0) + 12;
+  let out = [];
+  for (let i = 0; i < STRUM_SEGMENTS; i++){
+    out.push(base + tones[i % tones.length] + 12 * Math.floor(i / tones.length));
+  }
+  // The firmware's note table covers MIDI 24..96. Twelve chord tones stacked
+  // can overshoot that, and anything past the top would clamp onto the same
+  // note, so drop the whole ladder by octaves until it fits. Shifting all of
+  // it keeps the shape of the strum intact.
+  while (Math.max.apply(null, out) > 96) out = out.map(n => n - 12);
+  while (Math.min.apply(null, out) < 24) out = out.map(n => n + 12);
+  return out;
+}
+
+function releaseChord(){
+  chordNotes.forEach(n => stopNote(n, 0));
+  chordNotes = [];
+}
+
+function pressChord(rootIdx, qIdx){
+  releaseChord();
+  heldChord = { rootIdx, qIdx };
+  chordNotes = chordFor(rootIdx, qIdx);
+  chordNotes.forEach(n => playNote(n, 100, 0));
+  strumNotes = ladderFor(rootIdx, qIdx);
+  document.getElementById('chordName').textContent =
+    ROOTS[rootIdx][0] + (sharpOn ? '#' : '') + QUALITY[qIdx].suffix;
+  paintChords();
+}
+
+function paintChords(){
+  document.querySelectorAll('.chordbtn').forEach(b => {
+    const on = heldChord && (b.dataset.root | 0) === heldChord.rootIdx
+                         && (b.dataset.q | 0) === heldChord.qIdx;
+    b.classList.toggle('latched', !!on && latchOn);
+    b.classList.toggle('down', !!on && !latchOn);
+  });
+}
+
+function buildPlaySurface(){
+  const heads = document.getElementById('colHeads');
+  const grid  = document.getElementById('chordGrid');
+  if (!heads || !grid) return;
+
+  ROOTS.forEach(r => {
+    const h = document.createElement('div');
+    h.className = 'colhead'; h.textContent = r[0];
+    heads.appendChild(h);
+  });
+
+  QUALITY.forEach((q, qi) => {
+    ROOTS.forEach((r, ri) => {
+      const b = document.createElement('div');
+      b.className = 'chordbtn row' + qi;
+      b.dataset.root = ri; b.dataset.q = qi;
+      b.textContent = r[0] + q.suffix;
+      b.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        b.setPointerCapture(e.pointerId);
+        pressChord(ri, qi);
+      });
+      b.addEventListener('pointerup', () => {
+        if (!latchOn) { releaseChord(); heldChord = null; paintChords(); }
+      });
+      grid.appendChild(b);
+    });
+  });
+
+  // Strumpad: twelve sections, highest note at the top.
+  const strum = document.getElementById('strum');
+  const lbl = document.createElement('div');
+  lbl.className = 'label'; lbl.textContent = 'STRUM';
+  strum.appendChild(lbl);
+  for (let i = STRUM_SEGMENTS - 1; i >= 0; i--){
+    const seg = document.createElement('div');
+    seg.className = 'seg'; seg.dataset.seg = i;
+    strum.appendChild(seg);
+  }
+
+  function hit(seg, el){
+    if (seg === lastStrumSeg) return;      // only on crossing into a new one
+    lastStrumSeg = seg;
+    if (!strumNotes.length) return;
+    const n = strumNotes[seg];
+    playNote(n, 100, 0);
+    // The harp is plucked, not held: let the voice's own envelope end it.
+    setTimeout(() => stopNote(n, 0), 400);
+    el.classList.add('lit');
+    setTimeout(() => el.classList.remove('lit'), 120);
+  }
+
+  strum.addEventListener('pointerdown', e => {
+    const el = e.target.closest('.seg');
+    if (!el) return;
+    e.preventDefault();
+    strumming = true; lastStrumSeg = -1;
+    strum.setPointerCapture(e.pointerId);
+    hit(el.dataset.seg | 0, el);
+  });
+  strum.addEventListener('pointermove', e => {
+    if (!strumming) return;
+    // pointer capture keeps events here, so find the segment under the finger
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const seg = el && el.closest ? el.closest('.seg') : null;
+    if (seg) hit(seg.dataset.seg | 0, seg);
+  });
+  const endStrum = () => { strumming = false; lastStrumSeg = -1; };
+  strum.addEventListener('pointerup', endStrum);
+  strum.addEventListener('pointercancel', endStrum);
+
+  // Modifier switches
+  const sharpSw = document.getElementById('sharpSw');
+  const latchSw = document.getElementById('latchSw');
+  sharpSw.onclick = () => {
+    sharpOn = !sharpOn;
+    sharpSw.classList.toggle('active', sharpOn);
+    if (heldChord) pressChord(heldChord.rootIdx, heldChord.qIdx);
+  };
+  latchSw.onclick = () => {
+    latchOn = !latchOn;
+    latchSw.classList.toggle('active', latchOn);
+    if (!latchOn) { releaseChord(); heldChord = null; }
+    paintChords();
+  };
+
+  buildKeyboard();
+}
+
+/* ---- letter-key / clickable keyboard ---- */
+const KEYMAP = {
+  'a':60,'w':61,'s':62,'e':63,'d':64,'f':65,'t':66,'g':67,'y':68,'h':69,
+  'u':70,'j':71,'k':72,'o':73,'l':74,'p':75,';':76,
+  'z':36,'x':38,'c':42,'v':46,'b':35,'n':41,'m':49
+};
+const DRUMKEYS = new Set(['z','x','c','v','b','n','m']);
+const heldKeys = new Set();
+
+function buildKeyboard(){
+  const rows = [
+    [['a','C4'],['w','C#'],['s','D'],['e','D#'],['d','E'],['f','F'],['t','F#'],
+     ['g','G'],['y','G#'],['h','A'],['u','A#'],['j','B'],['k','C5'],['o','C#'],
+     ['l','D'],['p','D#'],[';','E']],
+    [['z','Kick'],['x','Snare'],['c','HatC'],['v','HatO'],['b','Kick2'],['n','Tom'],['m','Crash']]
+  ];
+  const host = document.getElementById('keys');
+  if (!host) return;
+  rows.forEach((row, ri) => {
+    row.forEach(([k, label]) => {
+      const el = document.createElement('div');
+      el.className = 'key' + (label.indexOf('#') >= 0 ? ' sharp' : '') + (ri ? ' drum' : '');
+      el.dataset.key = k;
+      el.innerHTML = '<b>' + k.toUpperCase() + '</b>' + label;
+      host.appendChild(el);
+    });
+    if (!ri){
+      const br = document.createElement('div');
+      br.style.cssText = 'flex-basis:100%;height:6px';
+      host.appendChild(br);
+    }
+  });
+}
+
+function paintKey(k, on){
+  const el = document.querySelector('[data-key="' + k + '"]');
+  if (el) el.classList.toggle('down', on);
+}
+
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  const k = e.key.toLowerCase();
+  if (!(k in KEYMAP) || heldKeys.has(k)) return;
+  heldKeys.add(k);
+  playNote(KEYMAP[k], 100, DRUMKEYS.has(k) ? 9 : 0);
+  paintKey(k, true);
+});
+window.addEventListener('keyup', e => {
+  const k = e.key.toLowerCase();
+  if (!heldKeys.has(k)) return;
+  heldKeys.delete(k);
+  if (!DRUMKEYS.has(k)) stopNote(KEYMAP[k], 0);
+  paintKey(k, false);
+});
+document.addEventListener('pointerdown', e => {
+  const el = e.target.closest('[data-key]');
+  if (!el) return;
+  const k = el.dataset.key;
+  playNote(KEYMAP[k], 100, DRUMKEYS.has(k) ? 9 : 0);
+  el.classList.add('down');
+  const up = () => {
+    if (!DRUMKEYS.has(k)) stopNote(KEYMAP[k], 0);
+    el.classList.remove('down');
+    window.removeEventListener('pointerup', up);
+  };
+  window.addEventListener('pointerup', up);
+});
+
 /* ==== Section nav ======================================================= */
 function buildNav(){
   const nav = document.getElementById('nav');
@@ -930,6 +1186,7 @@ sizeSel.onchange  = () => applyScale(sizeSel.value);
 
 /* ==== Boot ============================================================== */
 buildUI();
+buildPlaySurface();
 buildNav();
 renderAll();
 renderCc();

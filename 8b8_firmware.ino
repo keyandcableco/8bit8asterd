@@ -1642,6 +1642,21 @@ static void handleCommand(char *cmd) {
       Serial.println(F(":255"));
     }
   }
+  else if (strncmp(cmd, "NON:", 4) == 0 || strncmp(cmd, "NOF:", 4) == 0) {
+    // Notes over the control link, so the web panel can play real hardware
+    // without a MIDI keyboard: NON:<chan>:<note>:<vel>  NOF:<chan>:<note>
+    bool on = (cmd[1] == 'O' && cmd[2] == 'N');
+    char *p1 = cmd + 4;
+    char *p2 = strchr(p1, ':');
+    if (!p2) return;
+    uint8_t chan = (uint8_t)atoi(p1);
+    uint8_t note = (uint8_t)atoi(p2 + 1);
+    uint8_t vel  = 100;
+    char *p3 = strchr(p2 + 1, ':');
+    if (p3) vel = (uint8_t)atoi(p3 + 1);
+    if (on) noteOn(chan & 0x0F, note, vel);
+    else    noteOff(chan & 0x0F, note, 0);
+  }
   else if (strcmp(cmd, "CCMAP") == 0) {
     Serial.print(F("CCMAP:"));
     for (uint8_t i = 0; i < NUM_PARAMS; i++) {

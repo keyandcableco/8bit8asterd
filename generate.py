@@ -570,6 +570,52 @@ HTML_TEMPLATE = r"""<!doctype html>
   }
   .bar .spacer{ flex:1 1 auto; }
 
+
+  /* ---- Play surface: chord matrix, strumpad, keyboard ---- */
+  .play-wrap{ display:flex; gap:14px; flex-wrap:wrap; padding:12px 13px; }
+  .matrix{ flex:1 1 420px; }
+  .matrix .cols{ display:grid; grid-template-columns:repeat(7,1fr); gap:4px; }
+  .matrix .colhead{
+    font-family:var(--pixel); font-size:calc(8px * var(--ui-scale));
+    text-align:center; color:var(--text-dim); padding:5px 0 7px;
+  }
+  .chordbtn{
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    padding:14px 2px; text-align:center; cursor:pointer; user-select:none;
+    background:linear-gradient(180deg, var(--body-lit) 0%, var(--body) 100%);
+    border:2px solid var(--bezel); color:var(--text); touch-action:none;
+  }
+  .chordbtn.row1{ background:linear-gradient(180deg, var(--body) 0%, var(--body-dark) 100%); }
+  .chordbtn.row2{ background:linear-gradient(180deg, var(--body-dark) 0%, var(--slot) 100%); color:var(--text-dim); }
+  .chordbtn.down, .chordbtn.latched{ background:var(--accent); color:var(--on-accent); }
+
+  .strum{
+    flex:0 0 120px; display:flex; flex-direction:column; gap:2px;
+    touch-action:none; min-height:260px;
+  }
+  .strum .seg{
+    flex:1; border:2px solid var(--bezel); cursor:pointer;
+    background:linear-gradient(90deg, var(--body-dark) 0%, var(--slot) 100%);
+  }
+  .strum .seg.lit{ background:var(--accent); }
+  .strum .label{
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    color:var(--text-dim); text-align:center; padding-bottom:4px;
+  }
+
+  .keys{ display:flex; gap:3px; flex-wrap:wrap; padding:0 13px 12px; }
+  .key{
+    font-family:var(--mono); font-size:calc(10px * var(--ui-scale));
+    min-width:34px; padding:16px 6px 8px; text-align:center; cursor:pointer;
+    background:linear-gradient(180deg, var(--body-lit) 0%, var(--body) 100%);
+    border:2px solid var(--bezel); color:var(--text); user-select:none;
+    touch-action:none;
+  }
+  .key.sharp{ background:linear-gradient(180deg, var(--body-dark) 0%, var(--slot) 100%); color:var(--text-dim); }
+  .key.drum{ background:linear-gradient(180deg, var(--accent-dim) 0%, var(--slot) 100%); }
+  .key.down{ background:var(--accent); color:var(--on-accent); }
+  .key b{ display:block; font-family:var(--pixel); font-size:calc(7px * var(--ui-scale)); opacity:.7; margin-bottom:4px; }
+
   /* ---- Section nav: one band at a time, nothing to scroll past ---- */
   .nav{ gap:6px; }
   .nav button{
@@ -763,6 +809,33 @@ __TRANSPORT_UI__
   </div>
 
   <div id="sections"></div>
+
+
+  <section class="section" id="playSection">
+    <div class="section-head">
+      <h2>Play</h2><span class="scope">chords + harp</span>
+    </div>
+    <p class="section-blurb">Seven roots around the circle of fifths, three chord types, and a strumpad whose twelve notes follow whatever chord is held. Works with a mouse, a finger, or the letter keys.</p>
+    <div class="module">
+      <h2>Chord Matrix</h2>
+      <div class="bar" style="margin:0 13px 10px;">
+        <span class="label">Sharp</span>
+        <div class="switch" id="sharpSw"><div class="led"></div></div>
+        <span class="label">Hold</span>
+        <div class="switch" id="latchSw"><div class="led"></div></div>
+        <span class="spacer"></span>
+        <span class="label" id="chordName">&mdash;</span>
+      </div>
+      <div class="play-wrap">
+        <div class="matrix">
+          <div class="cols" id="colHeads"></div>
+          <div class="cols" id="chordGrid"></div>
+        </div>
+        <div class="strum" id="strum"></div>
+      </div>
+      <div class="keys" id="keys"></div>
+    </div>
+  </section>
 
 __EXTRA_BODY__
 
@@ -1089,6 +1162,232 @@ document.getElementById('importBtn').onclick = () => {
 // the thing to read when notes choke.
 document.getElementById('diagBtn').onclick = () => send('DIAG');
 
+
+/* ==== Play surface ====================================================== */
+// Layout follows the minichord: seven columns of roots around the circle of
+// fifths, three rows for major / minor / 7th, and a sharp modifier that
+// lifts every note a semitone. The strumpad is the harp -- twelve stacked
+// sections whose notes come from the chord currently held.
+
+const ROOTS  = [['F',53],['C',48],['G',55],['D',50],['A',57],['E',52],['B',59]];
+const QUALITY = [
+  { suffix: '',  name: 'maj', tones: [0,4,7]    },
+  { suffix: 'm', name: 'min', tones: [0,3,7]    },
+  { suffix: '7', name: '7th', tones: [0,4,7,10] }
+];
+const STRUM_SEGMENTS = 12;
+
+let sharpOn = false, latchOn = false;
+let heldChord = null;          // {root, quality} currently sounding
+let chordNotes = [];           // midi notes we switched on
+let strumNotes = [];           // the harp ladder for that chord
+let lastStrumSeg = -1, strumming = false;
+
+function chordFor(rootIdx, qIdx){
+  const base = ROOTS[rootIdx][1] + (sharpOn ? 1 : 0);
+  return QUALITY[qIdx].tones.map(t => base + t);
+}
+
+// The harp: chord tones stacked upward until twelve sections are filled, so
+// a strum walks the chord rather than a scale.
+function ladderFor(rootIdx, qIdx){
+  const tones = QUALITY[qIdx].tones;
+  let base = ROOTS[rootIdx][1] + (sharpOn ? 1 : 0) + 12;
+  let out = [];
+  for (let i = 0; i < STRUM_SEGMENTS; i++){
+    out.push(base + tones[i % tones.length] + 12 * Math.floor(i / tones.length));
+  }
+  // The firmware's note table covers MIDI 24..96. Twelve chord tones stacked
+  // can overshoot that, and anything past the top would clamp onto the same
+  // note, so drop the whole ladder by octaves until it fits. Shifting all of
+  // it keeps the shape of the strum intact.
+  while (Math.max.apply(null, out) > 96) out = out.map(n => n - 12);
+  while (Math.min.apply(null, out) < 24) out = out.map(n => n + 12);
+  return out;
+}
+
+function releaseChord(){
+  chordNotes.forEach(n => stopNote(n, 0));
+  chordNotes = [];
+}
+
+function pressChord(rootIdx, qIdx){
+  releaseChord();
+  heldChord = { rootIdx, qIdx };
+  chordNotes = chordFor(rootIdx, qIdx);
+  chordNotes.forEach(n => playNote(n, 100, 0));
+  strumNotes = ladderFor(rootIdx, qIdx);
+  document.getElementById('chordName').textContent =
+    ROOTS[rootIdx][0] + (sharpOn ? '#' : '') + QUALITY[qIdx].suffix;
+  paintChords();
+}
+
+function paintChords(){
+  document.querySelectorAll('.chordbtn').forEach(b => {
+    const on = heldChord && (b.dataset.root | 0) === heldChord.rootIdx
+                         && (b.dataset.q | 0) === heldChord.qIdx;
+    b.classList.toggle('latched', !!on && latchOn);
+    b.classList.toggle('down', !!on && !latchOn);
+  });
+}
+
+function buildPlaySurface(){
+  const heads = document.getElementById('colHeads');
+  const grid  = document.getElementById('chordGrid');
+  if (!heads || !grid) return;
+
+  ROOTS.forEach(r => {
+    const h = document.createElement('div');
+    h.className = 'colhead'; h.textContent = r[0];
+    heads.appendChild(h);
+  });
+
+  QUALITY.forEach((q, qi) => {
+    ROOTS.forEach((r, ri) => {
+      const b = document.createElement('div');
+      b.className = 'chordbtn row' + qi;
+      b.dataset.root = ri; b.dataset.q = qi;
+      b.textContent = r[0] + q.suffix;
+      b.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        b.setPointerCapture(e.pointerId);
+        pressChord(ri, qi);
+      });
+      b.addEventListener('pointerup', () => {
+        if (!latchOn) { releaseChord(); heldChord = null; paintChords(); }
+      });
+      grid.appendChild(b);
+    });
+  });
+
+  // Strumpad: twelve sections, highest note at the top.
+  const strum = document.getElementById('strum');
+  const lbl = document.createElement('div');
+  lbl.className = 'label'; lbl.textContent = 'STRUM';
+  strum.appendChild(lbl);
+  for (let i = STRUM_SEGMENTS - 1; i >= 0; i--){
+    const seg = document.createElement('div');
+    seg.className = 'seg'; seg.dataset.seg = i;
+    strum.appendChild(seg);
+  }
+
+  function hit(seg, el){
+    if (seg === lastStrumSeg) return;      // only on crossing into a new one
+    lastStrumSeg = seg;
+    if (!strumNotes.length) return;
+    const n = strumNotes[seg];
+    playNote(n, 100, 0);
+    // The harp is plucked, not held: let the voice's own envelope end it.
+    setTimeout(() => stopNote(n, 0), 400);
+    el.classList.add('lit');
+    setTimeout(() => el.classList.remove('lit'), 120);
+  }
+
+  strum.addEventListener('pointerdown', e => {
+    const el = e.target.closest('.seg');
+    if (!el) return;
+    e.preventDefault();
+    strumming = true; lastStrumSeg = -1;
+    strum.setPointerCapture(e.pointerId);
+    hit(el.dataset.seg | 0, el);
+  });
+  strum.addEventListener('pointermove', e => {
+    if (!strumming) return;
+    // pointer capture keeps events here, so find the segment under the finger
+    const el = document.elementFromPoint(e.clientX, e.clientY);
+    const seg = el && el.closest ? el.closest('.seg') : null;
+    if (seg) hit(seg.dataset.seg | 0, seg);
+  });
+  const endStrum = () => { strumming = false; lastStrumSeg = -1; };
+  strum.addEventListener('pointerup', endStrum);
+  strum.addEventListener('pointercancel', endStrum);
+
+  // Modifier switches
+  const sharpSw = document.getElementById('sharpSw');
+  const latchSw = document.getElementById('latchSw');
+  sharpSw.onclick = () => {
+    sharpOn = !sharpOn;
+    sharpSw.classList.toggle('active', sharpOn);
+    if (heldChord) pressChord(heldChord.rootIdx, heldChord.qIdx);
+  };
+  latchSw.onclick = () => {
+    latchOn = !latchOn;
+    latchSw.classList.toggle('active', latchOn);
+    if (!latchOn) { releaseChord(); heldChord = null; }
+    paintChords();
+  };
+
+  buildKeyboard();
+}
+
+/* ---- letter-key / clickable keyboard ---- */
+const KEYMAP = {
+  'a':60,'w':61,'s':62,'e':63,'d':64,'f':65,'t':66,'g':67,'y':68,'h':69,
+  'u':70,'j':71,'k':72,'o':73,'l':74,'p':75,';':76,
+  'z':36,'x':38,'c':42,'v':46,'b':35,'n':41,'m':49
+};
+const DRUMKEYS = new Set(['z','x','c','v','b','n','m']);
+const heldKeys = new Set();
+
+function buildKeyboard(){
+  const rows = [
+    [['a','C4'],['w','C#'],['s','D'],['e','D#'],['d','E'],['f','F'],['t','F#'],
+     ['g','G'],['y','G#'],['h','A'],['u','A#'],['j','B'],['k','C5'],['o','C#'],
+     ['l','D'],['p','D#'],[';','E']],
+    [['z','Kick'],['x','Snare'],['c','HatC'],['v','HatO'],['b','Kick2'],['n','Tom'],['m','Crash']]
+  ];
+  const host = document.getElementById('keys');
+  if (!host) return;
+  rows.forEach((row, ri) => {
+    row.forEach(([k, label]) => {
+      const el = document.createElement('div');
+      el.className = 'key' + (label.indexOf('#') >= 0 ? ' sharp' : '') + (ri ? ' drum' : '');
+      el.dataset.key = k;
+      el.innerHTML = '<b>' + k.toUpperCase() + '</b>' + label;
+      host.appendChild(el);
+    });
+    if (!ri){
+      const br = document.createElement('div');
+      br.style.cssText = 'flex-basis:100%;height:6px';
+      host.appendChild(br);
+    }
+  });
+}
+
+function paintKey(k, on){
+  const el = document.querySelector('[data-key="' + k + '"]');
+  if (el) el.classList.toggle('down', on);
+}
+
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  const k = e.key.toLowerCase();
+  if (!(k in KEYMAP) || heldKeys.has(k)) return;
+  heldKeys.add(k);
+  playNote(KEYMAP[k], 100, DRUMKEYS.has(k) ? 9 : 0);
+  paintKey(k, true);
+});
+window.addEventListener('keyup', e => {
+  const k = e.key.toLowerCase();
+  if (!heldKeys.has(k)) return;
+  heldKeys.delete(k);
+  if (!DRUMKEYS.has(k)) stopNote(KEYMAP[k], 0);
+  paintKey(k, false);
+});
+document.addEventListener('pointerdown', e => {
+  const el = e.target.closest('[data-key]');
+  if (!el) return;
+  const k = el.dataset.key;
+  playNote(KEYMAP[k], 100, DRUMKEYS.has(k) ? 9 : 0);
+  el.classList.add('down');
+  const up = () => {
+    if (!DRUMKEYS.has(k)) stopNote(KEYMAP[k], 0);
+    el.classList.remove('down');
+    window.removeEventListener('pointerup', up);
+  };
+  window.addEventListener('pointerup', up);
+});
+
 /* ==== Section nav ======================================================= */
 function buildNav(){
   const nav = document.getElementById('nav');
@@ -1159,6 +1458,7 @@ sizeSel.onchange  = () => applyScale(sizeSel.value);
 
 /* ==== Boot ============================================================== */
 buildUI();
+buildPlaySurface();
 buildNav();
 renderAll();
 renderCc();
@@ -1228,13 +1528,13 @@ def emit_temperaments(path):
     print(f"wrote {path}  ({len(rows)} temperaments, +/-{span} cents)")
 
 
-SERIAL_TRANSPORT_JS = "/* ==== Web Serial ======================================================== */\nlet port = null, reader = null, writer = null, inBuf = '';\nconst statusPill = document.getElementById('statusPill');\nconst statusText = document.getElementById('statusText');\nconst connectBtn = document.getElementById('connectBtn');\nconst disconnectBtn = document.getElementById('disconnectBtn');\n\nfunction setStatus(mode, text){\n  statusPill.className = 'status-pill' + (mode ? ' ' + mode : '');\n  statusText.textContent = text;\n}\n\nasync function connect(){\n  try{\n    port = await navigator.serial.requestPort();\n    await port.open({ baudRate: 115200 });\n    const dec = new TextDecoderStream();\n    port.readable.pipeTo(dec.writable).catch(()=>{});\n    reader = dec.readable.getReader();\n    const enc = new TextEncoderStream();\n    enc.readable.pipeTo(port.writable).catch(()=>{});\n    writer = enc.writable.getWriter();\n    connectBtn.disabled = true; disconnectBtn.disabled = false;\n    setStatus('on','Connected');\n    log('sys','Connected.');\n    readLoop();\n    sawLayout = false;\n    send('DUMP');\n    // Firmware older than the handshake answers DUMP with PRESET: but no\n    // LAYOUT: line at all, which is itself a mismatch worth reporting.\n    setTimeout(() => {\n      if (!sawLayout && port){\n        document.getElementById('mismatchDetail').textContent =\n          'The unit did not report a parameter layout at all, so it predates ' +\n          'this panel. This panel expects layout 0x' +\n          LAYOUT_VERSION.toString(16).toUpperCase() + ' with ' + NUM_PARAMS + ' parameters.';\n        document.getElementById('mismatch').style.display = 'block';\n        log('err', 'No LAYOUT reply \\u2014 flashed firmware is out of date.');\n      }\n    }, 1500);\n  }catch(err){\n    setStatus('err','Connect failed');\n    log('err','Connect failed: ' + err.message);\n  }\n}\n\nasync function disconnect(){\n  try{ await reader?.cancel(); }catch(e){}\n  try{ await writer?.close(); }catch(e){}\n  try{ await port?.close(); }catch(e){}\n  reader = writer = port = null;\n  connectBtn.disabled = false; disconnectBtn.disabled = true;\n  setStatus('','Disconnected');\n  log('sys','Disconnected.');\n}\n\nasync function readLoop(){\n  try{\n    while(true){\n      const { value, done } = await reader.read();\n      if (done) break;\n      inBuf += value;\n      let idx;\n      while ((idx = inBuf.indexOf('\\n')) >= 0){\n        const line = inBuf.slice(0, idx).replace('\\r','');\n        inBuf = inBuf.slice(idx + 1);\n        if (line.length) handleLine(line);\n      }\n    }\n  }catch(err){\n    log('err','Read error: ' + err.message);\n  }finally{\n    if (port) disconnect();\n  }\n}\n\nfunction send(cmd){\n  log('tx','\\u00bb ' + cmd);\n  if (writer) writer.write(cmd + '\\n').catch(err => log('err','Write failed: ' + err.message));\n}\n\n\n\nconnectBtn.onclick = connect;\ndisconnectBtn.onclick = disconnect;\nif (!('serial' in navigator)){\n  document.getElementById('unsupported').style.display = 'block';\n  connectBtn.disabled = true;\n}\n\n"
+SERIAL_TRANSPORT_JS = "/* ==== Web Serial ======================================================== */\nlet port = null, reader = null, writer = null, inBuf = '';\nconst statusPill = document.getElementById('statusPill');\nconst statusText = document.getElementById('statusText');\nconst connectBtn = document.getElementById('connectBtn');\nconst disconnectBtn = document.getElementById('disconnectBtn');\n\nfunction setStatus(mode, text){\n  statusPill.className = 'status-pill' + (mode ? ' ' + mode : '');\n  statusText.textContent = text;\n}\n\nasync function connect(){\n  try{\n    port = await navigator.serial.requestPort();\n    await port.open({ baudRate: 115200 });\n    const dec = new TextDecoderStream();\n    port.readable.pipeTo(dec.writable).catch(()=>{});\n    reader = dec.readable.getReader();\n    const enc = new TextEncoderStream();\n    enc.readable.pipeTo(port.writable).catch(()=>{});\n    writer = enc.writable.getWriter();\n    connectBtn.disabled = true; disconnectBtn.disabled = false;\n    setStatus('on','Connected');\n    log('sys','Connected.');\n    readLoop();\n    sawLayout = false;\n    send('DUMP');\n    // Firmware older than the handshake answers DUMP with PRESET: but no\n    // LAYOUT: line at all, which is itself a mismatch worth reporting.\n    setTimeout(() => {\n      if (!sawLayout && port){\n        document.getElementById('mismatchDetail').textContent =\n          'The unit did not report a parameter layout at all, so it predates ' +\n          'this panel. This panel expects layout 0x' +\n          LAYOUT_VERSION.toString(16).toUpperCase() + ' with ' + NUM_PARAMS + ' parameters.';\n        document.getElementById('mismatch').style.display = 'block';\n        log('err', 'No LAYOUT reply \\u2014 flashed firmware is out of date.');\n      }\n    }, 1500);\n  }catch(err){\n    setStatus('err','Connect failed');\n    log('err','Connect failed: ' + err.message);\n  }\n}\n\nasync function disconnect(){\n  try{ await reader?.cancel(); }catch(e){}\n  try{ await writer?.close(); }catch(e){}\n  try{ await port?.close(); }catch(e){}\n  reader = writer = port = null;\n  connectBtn.disabled = false; disconnectBtn.disabled = true;\n  setStatus('','Disconnected');\n  log('sys','Disconnected.');\n}\n\nasync function readLoop(){\n  try{\n    while(true){\n      const { value, done } = await reader.read();\n      if (done) break;\n      inBuf += value;\n      let idx;\n      while ((idx = inBuf.indexOf('\\n')) >= 0){\n        const line = inBuf.slice(0, idx).replace('\\r','');\n        inBuf = inBuf.slice(idx + 1);\n        if (line.length) handleLine(line);\n      }\n    }\n  }catch(err){\n    log('err','Read error: ' + err.message);\n  }finally{\n    if (port) disconnect();\n  }\n}\n\nfunction playNote(note, vel, chan){ send('NON:' + (chan||0) + ':' + note + ':' + (vel||100)); }\nfunction stopNote(note, chan){ send('NOF:' + (chan||0) + ':' + note); }\n\nfunction send(cmd){\n  log('tx','\\u00bb ' + cmd);\n  if (writer) writer.write(cmd + '\\n').catch(err => log('err','Write failed: ' + err.message));\n}\n\n\n\nconnectBtn.onclick = connect;\ndisconnectBtn.onclick = disconnect;\nif (!('serial' in navigator)){\n  document.getElementById('unsupported').style.display = 'block';\n  connectBtn.disabled = true;\n}\n\n"
 
 SERIAL_TRANSPORT_UI = '        <button class="btn" id="connectBtn">Connect</button>\n        <button class="btn danger" id="disconnectBtn" disabled>Disconnect</button>'
 
 WASM_TRANSPORT_UI = '        <button class="btn" id="startBtn">Start Audio</button>\n        <button class="btn danger" id="stopBtn" disabled>Stop</button>'
 
-WASM_TRANSPORT_JS = '/* ==== Emulated transport ================================================ */\n// The firmware itself, compiled to WebAssembly, driving three emulated\n// AY-3-8910s into Web Audio. The panel above is byte-identical to the one\n// that talks to real hardware over serial -- the only thing that changes is\n// what send() writes to. Same firmware, same parameters, same protocol.\n\nlet audioCtx = null, node = null, ready = false, pollTimer = null;\nconst HEAP_SAMPLES = 2048;\nlet heapPtr = 0;\n\nconst statusPill = document.getElementById(\'statusPill\');\nconst statusText = document.getElementById(\'statusText\');\nconst startBtn = document.getElementById(\'startBtn\');\nconst stopBtn  = document.getElementById(\'stopBtn\');\n\nfunction setStatus(mode, text){\n  statusPill.className = \'status-pill\' + (mode ? \' \' + mode : \'\');\n  statusText.textContent = text;\n}\n\nfunction send(cmd){\n  log(\'tx\',\'\\u00bb \' + cmd);\n  if (ready) Module.ccall(\'emu_send_line\', null, [\'string\'], [cmd]);\n}\n\nfunction pollReplies(){\n  if (!ready) return;\n  const s = Module.ccall(\'emu_read_lines\', \'string\', [], []);\n  if (!s) return;\n  for (const line of s.split(\'\\n\')) if (line.length) handleLine(line);\n}\n\nasync function startAudio(){\n  if (!window.Module || !Module.ccall){\n    log(\'err\',\'The emulator core has not loaded. Did you run build-wasm.sh?\');\n    setStatus(\'err\',\'No core\');\n    return;\n  }\n  audioCtx = new (window.AudioContext || window.webkitAudioContext)();\n  await audioCtx.resume();\n\n  Module.ccall(\'emu_init\', null, [\'number\'], [audioCtx.sampleRate]);\n  heapPtr = Module._malloc(HEAP_SAMPLES * 4);\n  ready = true;\n\n  node = audioCtx.createScriptProcessor(HEAP_SAMPLES, 0, 1);\n  node.onaudioprocess = (e) => {\n    const out = e.outputBuffer.getChannelData(0);\n    Module.ccall(\'emu_render\', null, [\'number\',\'number\'], [heapPtr, out.length]);\n    out.set(Module.HEAPF32.subarray(heapPtr >> 2, (heapPtr >> 2) + out.length));\n  };\n  node.connect(audioCtx.destination);\n\n  startBtn.disabled = true; stopBtn.disabled = false;\n  setStatus(\'on\',\'Running\');\n  log(\'sys\',\'Emulator running at \' + audioCtx.sampleRate + \'Hz.\');\n\n  pollTimer = setInterval(pollReplies, 60);\n  send(\'DUMP\');\n}\n\nfunction stopAudio(){\n  if (node) { node.disconnect(); node = null; }\n  if (audioCtx) { audioCtx.close(); audioCtx = null; }\n  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }\n  ready = false;\n  startBtn.disabled = false; stopBtn.disabled = true;\n  setStatus(\'\',\'Stopped\');\n}\n\nstartBtn.onclick = startAudio;\nstopBtn.onclick  = stopAudio;\n\n/* ---- playing it ---- */\nfunction noteOn(note, vel, chan){\n  if (ready) Module.ccall(\'emu_note_on\',\'null\'===\'x\'?null:null,[\'number\',\'number\',\'number\'],[chan||0, note, vel||100]);\n}\nfunction noteOff(note, chan){\n  if (ready) Module.ccall(\'emu_note_off\',null,[\'number\',\'number\'],[chan||0, note]);\n}\n\n// Computer keyboard, two rows laid out like a piano.\nconst KEYMAP = {\n  \'a\':60,\'w\':61,\'s\':62,\'e\':63,\'d\':64,\'f\':65,\'t\':66,\'g\':67,\'y\':68,\'h\':69,\n  \'u\':70,\'j\':71,\'k\':72,\'o\':73,\'l\':74,\'p\':75,\';\':76,\n  \'z\':36,\'x\':38,\'c\':42,\'v\':46,\'b\':35,\'n\':41,\'m\':49\n};\nconst DRUMKEYS = new Set([\'z\',\'x\',\'c\',\'v\',\'b\',\'n\',\'m\']);\nconst held = new Set();\nwindow.addEventListener(\'keydown\', e => {\n  if (e.target.tagName === \'INPUT\' || e.target.tagName === \'SELECT\') return;\n  const k = e.key.toLowerCase();\n  if (!(k in KEYMAP) || held.has(k)) return;\n  held.add(k);\n  noteOn(KEYMAP[k], 100, DRUMKEYS.has(k) ? 9 : 0);\n  paintKey(k, true);\n});\nwindow.addEventListener(\'keyup\', e => {\n  const k = e.key.toLowerCase();\n  if (!held.has(k)) return;\n  held.delete(k);\n  if (!DRUMKEYS.has(k)) noteOff(KEYMAP[k], 0);\n  paintKey(k, false);\n});\nfunction paintKey(k, on){\n  const el = document.querySelector(\'[data-key="\' + k + \'"]\');\n  if (el) el.classList.toggle(\'down\', on);\n}\n\n// Clickable keys\ndocument.addEventListener(\'pointerdown\', e => {\n  const el = e.target.closest(\'[data-key]\');\n  if (!el) return;\n  const k = el.dataset.key;\n  noteOn(KEYMAP[k], 100, DRUMKEYS.has(k) ? 9 : 0);\n  el.classList.add(\'down\');\n  const up = () => {\n    if (!DRUMKEYS.has(k)) noteOff(KEYMAP[k], 0);\n    el.classList.remove(\'down\');\n    window.removeEventListener(\'pointerup\', up);\n  };\n  window.addEventListener(\'pointerup\', up);\n});\n\n// Real MIDI hardware, if the browser offers it.\nif (navigator.requestMIDIAccess){\n  navigator.requestMIDIAccess().then(a => {\n    for (const inp of a.inputs.values()){\n      inp.onmidimessage = m => {\n        const [st, d1, d2] = m.data;\n        const ch = st & 0x0F, cmd = st & 0xF0;\n        if (cmd === 0x90 && d2 > 0) noteOn(d1, d2, ch);\n        else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) noteOff(d1, ch);\n      };\n    }\n    log(\'sys\',\'MIDI input connected.\');\n  }).catch(() => {});\n}\n'
+WASM_TRANSPORT_JS = "/* ==== Emulated transport ================================================ */\n// The firmware itself, compiled to WebAssembly, driving three emulated\n// AY-3-8910s into Web Audio. The panel above is byte-identical to the one\n// that talks to real hardware over serial -- the only thing that changes is\n// what send() writes to. Same firmware, same parameters, same protocol.\n\nlet audioCtx = null, node = null, ready = false, pollTimer = null;\nconst HEAP_SAMPLES = 2048;\nlet heapPtr = 0;\n\nconst statusPill = document.getElementById('statusPill');\nconst statusText = document.getElementById('statusText');\nconst startBtn = document.getElementById('startBtn');\nconst stopBtn  = document.getElementById('stopBtn');\n\nfunction setStatus(mode, text){\n  statusPill.className = 'status-pill' + (mode ? ' ' + mode : '');\n  statusText.textContent = text;\n}\n\nfunction send(cmd){\n  log('tx','\\u00bb ' + cmd);\n  if (ready) Module.ccall('emu_send_line', null, ['string'], [cmd]);\n}\n\nfunction pollReplies(){\n  if (!ready) return;\n  const s = Module.ccall('emu_read_lines', 'string', [], []);\n  if (!s) return;\n  for (const line of s.split('\\n')) if (line.length) handleLine(line);\n}\n\nasync function startAudio(){\n  if (!window.Module || !Module.ccall){\n    log('err','The emulator core has not loaded. Did you run build-wasm.sh?');\n    setStatus('err','No core');\n    return;\n  }\n  audioCtx = new (window.AudioContext || window.webkitAudioContext)();\n  await audioCtx.resume();\n\n  Module.ccall('emu_init', null, ['number'], [audioCtx.sampleRate]);\n  heapPtr = Module._malloc(HEAP_SAMPLES * 4);\n  ready = true;\n\n  node = audioCtx.createScriptProcessor(HEAP_SAMPLES, 0, 1);\n  node.onaudioprocess = (e) => {\n    const out = e.outputBuffer.getChannelData(0);\n    Module.ccall('emu_render', null, ['number','number'], [heapPtr, out.length]);\n    out.set(Module.HEAPF32.subarray(heapPtr >> 2, (heapPtr >> 2) + out.length));\n  };\n  node.connect(audioCtx.destination);\n\n  startBtn.disabled = true; stopBtn.disabled = false;\n  setStatus('on','Running');\n  log('sys','Emulator running at ' + audioCtx.sampleRate + 'Hz.');\n\n  pollTimer = setInterval(pollReplies, 60);\n  send('DUMP');\n}\n\nfunction stopAudio(){\n  if (node) { node.disconnect(); node = null; }\n  if (audioCtx) { audioCtx.close(); audioCtx = null; }\n  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }\n  ready = false;\n  startBtn.disabled = false; stopBtn.disabled = true;\n  setStatus('','Stopped');\n}\n\nstartBtn.onclick = startAudio;\nstopBtn.onclick  = stopAudio;\n\n/* ---- playing it ---- */\nfunction playNote(note, vel, chan){\n  if (ready) Module.ccall('emu_note_on', null, ['number','number','number'], [chan||0, note, vel||100]);\n}\nfunction stopNote(note, chan){\n  if (ready) Module.ccall('emu_note_off', null, ['number','number'], [chan||0, note]);\n}\n\n// Real MIDI hardware, if the browser offers it.\nif (navigator.requestMIDIAccess){\n  navigator.requestMIDIAccess().then(a => {\n    for (const inp of a.inputs.values()){\n      inp.onmidimessage = m => {\n        const [st, d1, d2] = m.data;\n        const ch = st & 0x0F, cmd = st & 0xF0;\n        if (cmd === 0x90 && d2 > 0) playNote(d1, d2, ch);\n        else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) stopNote(d1, ch);\n      };\n    }\n    log('sys','MIDI input connected.');\n  }).catch(() => {});\n}\n"
 
 EMU_EXTRA_HEAD = '<style>\n  .keys{ display:flex; gap:3px; flex-wrap:wrap; padding:12px 13px; }\n  .key{\n    font-family:var(--mono); font-size:calc(10px * var(--ui-scale));\n    min-width:34px; padding:16px 6px 8px; text-align:center; cursor:pointer;\n    background:linear-gradient(180deg, var(--body-lit) 0%, var(--body) 100%);\n    border:2px solid var(--bezel); color:var(--text); user-select:none;\n  }\n  .key.sharp{ background:linear-gradient(180deg, var(--body-dark) 0%, var(--slot) 100%); color:var(--text-dim); }\n  .key.drum{ background:linear-gradient(180deg, var(--accent-dim) 0%, var(--slot) 100%); }\n  .key.down{ background:var(--accent); color:var(--on-accent); }\n  .key b{ display:block; font-family:var(--pixel); font-size:calc(7px * var(--ui-scale)); opacity:.7; margin-bottom:4px; }\n</style>\n<script>var Module = { onRuntimeInitialized: function(){ if (window.onCoreReady) window.onCoreReady(); } };</script>\n<script src="8b8.js"></script>'
 
