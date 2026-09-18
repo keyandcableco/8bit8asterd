@@ -1,0 +1,48 @@
+#!/bin/bash
+# 8b8 build helper.  Put this in the repo root, chmod +x, then:
+#   ./b8 patch <file.patch>   apply a patch (dry run first, aborts on failure)
+#   ./b8 build                regenerate + compile
+#   ./b8 flash                regenerate + compile + upload
+#   ./b8 all <file.patch>     patch, then flash
+set -e
+REPO="$(cd "$(dirname "$0")" && pwd)"
+FQBN="arduino:avr:leonardo"
+
+find_port() {
+  local p
+  p=$(arduino-cli board list 2>/dev/null | awk '/Leonardo/{print $1; exit}')
+  [ -z "$p" ] && p=$(ls /dev/ttyACM* 2>/dev/null | head -1)
+  echo "$p"
+}
+
+do_patch() {
+  [ -f "$1" ] || { echo "no such patch: $1"; exit 1; }
+  echo "== dry run =="
+  git -C "$REPO" apply --check "$1" || { echo "PATCH DOES NOT APPLY - stopping"; exit 1; }
+  git -C "$REPO" apply "$1"
+  echo "applied: $(basename "$1")"
+  git -C "$REPO" diff --stat
+}
+
+do_build() {
+  echo "== generate =="
+  python3 "$REPO/generate.py"
+  echo "== compile =="
+  arduino-cli compile --fqbn "$FQBN" "$REPO"
+}
+
+do_flash() {
+  do_build
+  local P; P=$(find_port)
+  [ -z "$P" ] && { echo "no Leonardo found - is it plugged in?"; exit 1; }
+  echo "== upload to $P =="
+  arduino-cli upload -p "$P" --fqbn "$FQBN" "$REPO"
+}
+
+case "$1" in
+  patch) do_patch "$2" ;;
+  build) do_build ;;
+  flash) do_flash ;;
+  all)   do_patch "$2"; do_flash ;;
+  *) echo "usage: ./b8 {patch <file>|build|flash|all <file>}"; exit 1 ;;
+esac
