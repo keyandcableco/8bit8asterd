@@ -570,6 +570,26 @@ HTML_TEMPLATE = r"""<!doctype html>
   }
   .bar .spacer{ flex:1 1 auto; }
 
+  /* ---- Section nav: one band at a time, nothing to scroll past ---- */
+  .nav{ gap:6px; }
+  .nav button{
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    color:var(--text-dim); cursor:pointer; padding:10px 12px;
+    background:var(--slot); border:2px solid var(--bezel);
+  }
+  .nav button:hover{ color:var(--text); }
+  .nav button.active{ background:var(--accent); color:var(--on-accent); }
+  .section.hidden{ display:none; }
+
+  /* ---- MIDI learn ---- */
+  body.learning .ctl .name{ cursor:pointer; color:var(--warn); text-decoration:underline dotted; }
+  body.learning .ctl .name:hover{ color:var(--accent-lit); }
+  .ctl .name.armed{ color:var(--accent-lit) !important; }
+  .ctl .cc{
+    font-family:var(--pixel); font-size:calc(6px * var(--ui-scale));
+    color:var(--text-dim); margin-left:6px; opacity:.75;
+  }
+
   /* ---- Section bands ---- */
   .section{ margin-bottom:22px; }
   .section-head{
@@ -678,6 +698,7 @@ HTML_TEMPLATE = r"""<!doctype html>
     .head-inner{ padding:14px; }
   }
 </style>
+__EXTRA_HEAD__
 </head>
 <body>
 <div class="rack">
@@ -692,8 +713,7 @@ HTML_TEMPLATE = r"""<!doctype html>
       </div>
       <div class="connection">
         <div class="status-pill" id="statusPill"><span class="dot"></span><span id="statusText">Disconnected</span></div>
-        <button class="btn" id="connectBtn">Connect</button>
-        <button class="btn danger" id="disconnectBtn" disabled>Disconnect</button>
+__TRANSPORT_UI__
       </div>
     </div>
   </header>
@@ -725,8 +745,11 @@ HTML_TEMPLATE = r"""<!doctype html>
       <option value="1.45">Larger</option>
     </select>
     <span class="spacer"></span>
+    <button class="btn" id="learnBtn">MIDI Learn</button>
     <button class="btn" id="diagBtn">Diag</button>
   </div>
+
+  <nav class="bar nav" id="nav"></nav>
 
   <div class="bar presets">
     <span class="label">Preset</span>
@@ -740,6 +763,8 @@ HTML_TEMPLATE = r"""<!doctype html>
   </div>
 
   <div id="sections"></div>
+
+__EXTRA_BODY__
 
   <div class="console">
     <div class="console-head">
@@ -774,87 +799,10 @@ function log(cls, text){
 }
 document.getElementById('clearLog').onclick = () => { logEl.innerHTML = ''; };
 
-/* ==== Web Serial ======================================================== */
-let port = null, reader = null, writer = null, inBuf = '';
+__TRANSPORT_JS__
+
+/* ==== Protocol (shared by both transports) ============================== */
 let sawLayout = false;
-const statusPill = document.getElementById('statusPill');
-const statusText = document.getElementById('statusText');
-const connectBtn = document.getElementById('connectBtn');
-const disconnectBtn = document.getElementById('disconnectBtn');
-
-function setStatus(mode, text){
-  statusPill.className = 'status-pill' + (mode ? ' ' + mode : '');
-  statusText.textContent = text;
-}
-
-async function connect(){
-  try{
-    port = await navigator.serial.requestPort();
-    await port.open({ baudRate: 115200 });
-    const dec = new TextDecoderStream();
-    port.readable.pipeTo(dec.writable).catch(()=>{});
-    reader = dec.readable.getReader();
-    const enc = new TextEncoderStream();
-    enc.readable.pipeTo(port.writable).catch(()=>{});
-    writer = enc.writable.getWriter();
-    connectBtn.disabled = true; disconnectBtn.disabled = false;
-    setStatus('on','Connected');
-    log('sys','Connected.');
-    readLoop();
-    sawLayout = false;
-    send('DUMP');
-    // Firmware older than the handshake answers DUMP with PRESET: but no
-    // LAYOUT: line at all, which is itself a mismatch worth reporting.
-    setTimeout(() => {
-      if (!sawLayout && port){
-        document.getElementById('mismatchDetail').textContent =
-          'The unit did not report a parameter layout at all, so it predates ' +
-          'this panel. This panel expects layout 0x' +
-          LAYOUT_VERSION.toString(16).toUpperCase() + ' with ' + NUM_PARAMS + ' parameters.';
-        document.getElementById('mismatch').style.display = 'block';
-        log('err', 'No LAYOUT reply \u2014 flashed firmware is out of date.');
-      }
-    }, 1500);
-  }catch(err){
-    setStatus('err','Connect failed');
-    log('err','Connect failed: ' + err.message);
-  }
-}
-
-async function disconnect(){
-  try{ await reader?.cancel(); }catch(e){}
-  try{ await writer?.close(); }catch(e){}
-  try{ await port?.close(); }catch(e){}
-  reader = writer = port = null;
-  connectBtn.disabled = false; disconnectBtn.disabled = true;
-  setStatus('','Disconnected');
-  log('sys','Disconnected.');
-}
-
-async function readLoop(){
-  try{
-    while(true){
-      const { value, done } = await reader.read();
-      if (done) break;
-      inBuf += value;
-      let idx;
-      while ((idx = inBuf.indexOf('\n')) >= 0){
-        const line = inBuf.slice(0, idx).replace('\r','');
-        inBuf = inBuf.slice(idx + 1);
-        if (line.length) handleLine(line);
-      }
-    }
-  }catch(err){
-    log('err','Read error: ' + err.message);
-  }finally{
-    if (port) disconnect();
-  }
-}
-
-function send(cmd){
-  log('tx','\u00bb ' + cmd);
-  if (writer) writer.write(cmd + '\n').catch(err => log('err','Write failed: ' + err.message));
-}
 
 function handleLine(line){
   if (line.startsWith('PRESET:')){
@@ -898,6 +846,21 @@ function handleLine(line){
   else if (line.startsWith('DIAG')){
     log('rx','\u00ab ' + line);
   }
+  else if (line.startsWith('CCMAP:')){
+    log('rx','\u00ab ' + line);
+    line.slice(6).split(',').forEach((v, i) => { ccAssign[i] = parseInt(v, 10); });
+    renderCc();
+  }
+  else if (line.startsWith('CC:')){
+    log('rx','\u00ab ' + line);
+    const parts = line.split(':');
+    ccAssign[parseInt(parts[1], 10)] = parseInt(parts[2], 10);
+    document.querySelectorAll('.ctl .name.armed').forEach(e => e.classList.remove('armed'));
+    renderCc();
+  }
+  else if (line.startsWith('LEARNING:')){
+    log('sys','Waiting for a CC \u2014 move a control on your MIDI controller.');
+  }
   else if (line.startsWith('ERR:')){
     // The unit rejected a command rather than half-applying it.
     log('err','\u00ab ' + line);
@@ -914,13 +877,6 @@ function handleLine(line){
     log('sys','Parameters saved to the unit\u2019s EEPROM.');
   }
   // Anything else (e.g. DEBUG output sharing the port) is ignored.
-}
-
-connectBtn.onclick = connect;
-disconnectBtn.onclick = disconnect;
-if (!('serial' in navigator)){
-  document.getElementById('unsupported').style.display = 'block';
-  connectBtn.disabled = true;
 }
 
 /* ==== Sending param changes ============================================ */
@@ -1025,6 +981,17 @@ function buildControl(p){
   row.className = 'row';
   const name = document.createElement('span');
   name.className = 'name'; name.textContent = p.label;
+  const ccTag = document.createElement('span');
+  ccTag.className = 'cc'; ccTag.dataset.idx = p.index;
+  name.appendChild(ccTag);
+  // In learn mode the label is the target: click it, then move something on
+  // the controller and the firmware binds whatever CC that sent.
+  name.onclick = () => {
+    if (!document.body.classList.contains('learning')) return;
+    document.querySelectorAll('.ctl .name.armed').forEach(e => e.classList.remove('armed'));
+    name.classList.add('armed');
+    send('LEARN:' + p.index);
+  };
   row.appendChild(name);
   wrap.appendChild(row);
 
@@ -1122,6 +1089,47 @@ document.getElementById('importBtn').onclick = () => {
 // the thing to read when notes choke.
 document.getElementById('diagBtn').onclick = () => send('DIAG');
 
+/* ==== Section nav ======================================================= */
+function buildNav(){
+  const nav = document.getElementById('nav');
+  const bands = [...document.querySelectorAll('.section')];
+  const names = bands.map(b => b.querySelector('.section-head h2').textContent);
+
+  function show(which){
+    bands.forEach((b, i) => b.classList.toggle('hidden', which !== 'All' && names[i] !== which));
+    [...nav.children].forEach(btn => btn.classList.toggle('active', btn.textContent === which));
+    try { localStorage.setItem('8b8.section', which); } catch(e){}
+  }
+  for (const label of names.concat(['All'])){
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.onclick = () => show(label);
+    nav.appendChild(b);
+  }
+  let want = names[0];
+  try { want = localStorage.getItem('8b8.section') || want; } catch(e){}
+  if (want !== 'All' && names.indexOf(want) < 0) want = names[0];
+  show(want);
+}
+
+/* ==== MIDI learn ======================================================== */
+const ccAssign = new Array(NUM_PARAMS).fill(255);
+
+function renderCc(){
+  document.querySelectorAll('.ctl .cc').forEach(el => {
+    const cc = ccAssign[el.dataset.idx | 0];
+    el.textContent = (cc === 255 || cc === undefined || isNaN(cc)) ? '' : ('CC' + cc);
+  });
+}
+
+const learnBtn = document.getElementById('learnBtn');
+learnBtn.onclick = () => {
+  const on = document.body.classList.toggle('learning');
+  learnBtn.style.color = on ? 'var(--accent-lit)' : '';
+  if (on) log('sys','MIDI learn on: click a control name, then move a knob on your controller.');
+  else document.querySelectorAll('.ctl .name.armed').forEach(e => e.classList.remove('armed'));
+};
+
 /* ==== Appearance ======================================================== */
 // Theme and text size are per-viewer conveniences, so they live in
 // localStorage rather than on the unit. Wrapped because storage can be
@@ -1151,7 +1159,9 @@ sizeSel.onchange  = () => applyScale(sizeSel.value);
 
 /* ==== Boot ============================================================== */
 buildUI();
+buildNav();
 renderAll();
+renderCc();
 </script>
 </body>
 </html>
@@ -1218,14 +1228,32 @@ def emit_temperaments(path):
     print(f"wrote {path}  ({len(rows)} temperaments, +/-{span} cents)")
 
 
-def emit_html(path):
+SERIAL_TRANSPORT_JS = "/* ==== Web Serial ======================================================== */\nlet port = null, reader = null, writer = null, inBuf = '';\nconst statusPill = document.getElementById('statusPill');\nconst statusText = document.getElementById('statusText');\nconst connectBtn = document.getElementById('connectBtn');\nconst disconnectBtn = document.getElementById('disconnectBtn');\n\nfunction setStatus(mode, text){\n  statusPill.className = 'status-pill' + (mode ? ' ' + mode : '');\n  statusText.textContent = text;\n}\n\nasync function connect(){\n  try{\n    port = await navigator.serial.requestPort();\n    await port.open({ baudRate: 115200 });\n    const dec = new TextDecoderStream();\n    port.readable.pipeTo(dec.writable).catch(()=>{});\n    reader = dec.readable.getReader();\n    const enc = new TextEncoderStream();\n    enc.readable.pipeTo(port.writable).catch(()=>{});\n    writer = enc.writable.getWriter();\n    connectBtn.disabled = true; disconnectBtn.disabled = false;\n    setStatus('on','Connected');\n    log('sys','Connected.');\n    readLoop();\n    sawLayout = false;\n    send('DUMP');\n    // Firmware older than the handshake answers DUMP with PRESET: but no\n    // LAYOUT: line at all, which is itself a mismatch worth reporting.\n    setTimeout(() => {\n      if (!sawLayout && port){\n        document.getElementById('mismatchDetail').textContent =\n          'The unit did not report a parameter layout at all, so it predates ' +\n          'this panel. This panel expects layout 0x' +\n          LAYOUT_VERSION.toString(16).toUpperCase() + ' with ' + NUM_PARAMS + ' parameters.';\n        document.getElementById('mismatch').style.display = 'block';\n        log('err', 'No LAYOUT reply \\u2014 flashed firmware is out of date.');\n      }\n    }, 1500);\n  }catch(err){\n    setStatus('err','Connect failed');\n    log('err','Connect failed: ' + err.message);\n  }\n}\n\nasync function disconnect(){\n  try{ await reader?.cancel(); }catch(e){}\n  try{ await writer?.close(); }catch(e){}\n  try{ await port?.close(); }catch(e){}\n  reader = writer = port = null;\n  connectBtn.disabled = false; disconnectBtn.disabled = true;\n  setStatus('','Disconnected');\n  log('sys','Disconnected.');\n}\n\nasync function readLoop(){\n  try{\n    while(true){\n      const { value, done } = await reader.read();\n      if (done) break;\n      inBuf += value;\n      let idx;\n      while ((idx = inBuf.indexOf('\\n')) >= 0){\n        const line = inBuf.slice(0, idx).replace('\\r','');\n        inBuf = inBuf.slice(idx + 1);\n        if (line.length) handleLine(line);\n      }\n    }\n  }catch(err){\n    log('err','Read error: ' + err.message);\n  }finally{\n    if (port) disconnect();\n  }\n}\n\nfunction send(cmd){\n  log('tx','\\u00bb ' + cmd);\n  if (writer) writer.write(cmd + '\\n').catch(err => log('err','Write failed: ' + err.message));\n}\n\n\n\nconnectBtn.onclick = connect;\ndisconnectBtn.onclick = disconnect;\nif (!('serial' in navigator)){\n  document.getElementById('unsupported').style.display = 'block';\n  connectBtn.disabled = true;\n}\n\n"
+
+SERIAL_TRANSPORT_UI = '        <button class="btn" id="connectBtn">Connect</button>\n        <button class="btn danger" id="disconnectBtn" disabled>Disconnect</button>'
+
+WASM_TRANSPORT_UI = '        <button class="btn" id="startBtn">Start Audio</button>\n        <button class="btn danger" id="stopBtn" disabled>Stop</button>'
+
+WASM_TRANSPORT_JS = '/* ==== Emulated transport ================================================ */\n// The firmware itself, compiled to WebAssembly, driving three emulated\n// AY-3-8910s into Web Audio. The panel above is byte-identical to the one\n// that talks to real hardware over serial -- the only thing that changes is\n// what send() writes to. Same firmware, same parameters, same protocol.\n\nlet audioCtx = null, node = null, ready = false, pollTimer = null;\nconst HEAP_SAMPLES = 2048;\nlet heapPtr = 0;\n\nconst statusPill = document.getElementById(\'statusPill\');\nconst statusText = document.getElementById(\'statusText\');\nconst startBtn = document.getElementById(\'startBtn\');\nconst stopBtn  = document.getElementById(\'stopBtn\');\n\nfunction setStatus(mode, text){\n  statusPill.className = \'status-pill\' + (mode ? \' \' + mode : \'\');\n  statusText.textContent = text;\n}\n\nfunction send(cmd){\n  log(\'tx\',\'\\u00bb \' + cmd);\n  if (ready) Module.ccall(\'emu_send_line\', null, [\'string\'], [cmd]);\n}\n\nfunction pollReplies(){\n  if (!ready) return;\n  const s = Module.ccall(\'emu_read_lines\', \'string\', [], []);\n  if (!s) return;\n  for (const line of s.split(\'\\n\')) if (line.length) handleLine(line);\n}\n\nasync function startAudio(){\n  if (!window.Module || !Module.ccall){\n    log(\'err\',\'The emulator core has not loaded. Did you run build-wasm.sh?\');\n    setStatus(\'err\',\'No core\');\n    return;\n  }\n  audioCtx = new (window.AudioContext || window.webkitAudioContext)();\n  await audioCtx.resume();\n\n  Module.ccall(\'emu_init\', null, [\'number\'], [audioCtx.sampleRate]);\n  heapPtr = Module._malloc(HEAP_SAMPLES * 4);\n  ready = true;\n\n  node = audioCtx.createScriptProcessor(HEAP_SAMPLES, 0, 1);\n  node.onaudioprocess = (e) => {\n    const out = e.outputBuffer.getChannelData(0);\n    Module.ccall(\'emu_render\', null, [\'number\',\'number\'], [heapPtr, out.length]);\n    out.set(Module.HEAPF32.subarray(heapPtr >> 2, (heapPtr >> 2) + out.length));\n  };\n  node.connect(audioCtx.destination);\n\n  startBtn.disabled = true; stopBtn.disabled = false;\n  setStatus(\'on\',\'Running\');\n  log(\'sys\',\'Emulator running at \' + audioCtx.sampleRate + \'Hz.\');\n\n  pollTimer = setInterval(pollReplies, 60);\n  send(\'DUMP\');\n}\n\nfunction stopAudio(){\n  if (node) { node.disconnect(); node = null; }\n  if (audioCtx) { audioCtx.close(); audioCtx = null; }\n  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }\n  ready = false;\n  startBtn.disabled = false; stopBtn.disabled = true;\n  setStatus(\'\',\'Stopped\');\n}\n\nstartBtn.onclick = startAudio;\nstopBtn.onclick  = stopAudio;\n\n/* ---- playing it ---- */\nfunction noteOn(note, vel, chan){\n  if (ready) Module.ccall(\'emu_note_on\',\'null\'===\'x\'?null:null,[\'number\',\'number\',\'number\'],[chan||0, note, vel||100]);\n}\nfunction noteOff(note, chan){\n  if (ready) Module.ccall(\'emu_note_off\',null,[\'number\',\'number\'],[chan||0, note]);\n}\n\n// Computer keyboard, two rows laid out like a piano.\nconst KEYMAP = {\n  \'a\':60,\'w\':61,\'s\':62,\'e\':63,\'d\':64,\'f\':65,\'t\':66,\'g\':67,\'y\':68,\'h\':69,\n  \'u\':70,\'j\':71,\'k\':72,\'o\':73,\'l\':74,\'p\':75,\';\':76,\n  \'z\':36,\'x\':38,\'c\':42,\'v\':46,\'b\':35,\'n\':41,\'m\':49\n};\nconst DRUMKEYS = new Set([\'z\',\'x\',\'c\',\'v\',\'b\',\'n\',\'m\']);\nconst held = new Set();\nwindow.addEventListener(\'keydown\', e => {\n  if (e.target.tagName === \'INPUT\' || e.target.tagName === \'SELECT\') return;\n  const k = e.key.toLowerCase();\n  if (!(k in KEYMAP) || held.has(k)) return;\n  held.add(k);\n  noteOn(KEYMAP[k], 100, DRUMKEYS.has(k) ? 9 : 0);\n  paintKey(k, true);\n});\nwindow.addEventListener(\'keyup\', e => {\n  const k = e.key.toLowerCase();\n  if (!held.has(k)) return;\n  held.delete(k);\n  if (!DRUMKEYS.has(k)) noteOff(KEYMAP[k], 0);\n  paintKey(k, false);\n});\nfunction paintKey(k, on){\n  const el = document.querySelector(\'[data-key="\' + k + \'"]\');\n  if (el) el.classList.toggle(\'down\', on);\n}\n\n// Clickable keys\ndocument.addEventListener(\'pointerdown\', e => {\n  const el = e.target.closest(\'[data-key]\');\n  if (!el) return;\n  const k = el.dataset.key;\n  noteOn(KEYMAP[k], 100, DRUMKEYS.has(k) ? 9 : 0);\n  el.classList.add(\'down\');\n  const up = () => {\n    if (!DRUMKEYS.has(k)) noteOff(KEYMAP[k], 0);\n    el.classList.remove(\'down\');\n    window.removeEventListener(\'pointerup\', up);\n  };\n  window.addEventListener(\'pointerup\', up);\n});\n\n// Real MIDI hardware, if the browser offers it.\nif (navigator.requestMIDIAccess){\n  navigator.requestMIDIAccess().then(a => {\n    for (const inp of a.inputs.values()){\n      inp.onmidimessage = m => {\n        const [st, d1, d2] = m.data;\n        const ch = st & 0x0F, cmd = st & 0xF0;\n        if (cmd === 0x90 && d2 > 0) noteOn(d1, d2, ch);\n        else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) noteOff(d1, ch);\n      };\n    }\n    log(\'sys\',\'MIDI input connected.\');\n  }).catch(() => {});\n}\n'
+
+EMU_EXTRA_HEAD = '<style>\n  .keys{ display:flex; gap:3px; flex-wrap:wrap; padding:12px 13px; }\n  .key{\n    font-family:var(--mono); font-size:calc(10px * var(--ui-scale));\n    min-width:34px; padding:16px 6px 8px; text-align:center; cursor:pointer;\n    background:linear-gradient(180deg, var(--body-lit) 0%, var(--body) 100%);\n    border:2px solid var(--bezel); color:var(--text); user-select:none;\n  }\n  .key.sharp{ background:linear-gradient(180deg, var(--body-dark) 0%, var(--slot) 100%); color:var(--text-dim); }\n  .key.drum{ background:linear-gradient(180deg, var(--accent-dim) 0%, var(--slot) 100%); }\n  .key.down{ background:var(--accent); color:var(--on-accent); }\n  .key b{ display:block; font-family:var(--pixel); font-size:calc(7px * var(--ui-scale)); opacity:.7; margin-bottom:4px; }\n</style>\n<script>var Module = { onRuntimeInitialized: function(){ if (window.onCoreReady) window.onCoreReady(); } };</script>\n<script src="8b8.js"></script>'
+
+EMU_EXTRA_BODY = '  <div class="section">\n    <div class="section-head">\n      <h2>Keyboard</h2><span class="scope">click or type</span>\n    </div>\n    <p class="section-blurb">Letter rows play pitched notes; the bottom row plays drums on channel 10. A real MIDI keyboard works too if your browser supports Web MIDI.</p>\n    <div class="module">\n      <h2>Play</h2>\n      <div class="keys" id="keys"></div>\n    </div>\n  </div>\n\n  <script>\n  (function(){\n    const rows = [\n      [[\'a\',\'C4\'],[\'w\',\'C#\'],[\'s\',\'D\'],[\'e\',\'D#\'],[\'d\',\'E\'],[\'f\',\'F\'],[\'t\',\'F#\'],\n       [\'g\',\'G\'],[\'y\',\'G#\'],[\'h\',\'A\'],[\'u\',\'A#\'],[\'j\',\'B\'],[\'k\',\'C5\'],[\'o\',\'C#\'],\n       [\'l\',\'D\'],[\'p\',\'D#\'],[\';\',\'E\']],\n      [[\'z\',\'Kick\'],[\'x\',\'Snare\'],[\'c\',\'HatC\'],[\'v\',\'HatO\'],[\'b\',\'Kick2\'],[\'n\',\'Tom\'],[\'m\',\'Crash\']]\n    ];\n    const host = document.getElementById(\'keys\');\n    rows.forEach((row, ri) => {\n      row.forEach(([k, label]) => {\n        const el = document.createElement(\'div\');\n        el.className = \'key\' + (label.includes(\'#\') ? \' sharp\' : \'\') + (ri ? \' drum\' : \'\');\n        el.dataset.key = k;\n        el.innerHTML = \'<b>\' + k.toUpperCase() + \'</b>\' + label;\n        host.appendChild(el);\n      });\n      if (!ri) host.appendChild(Object.assign(document.createElement(\'div\'), {style:\'flex-basis:100%;height:6px\'}));\n    });\n  })();\n  </script>'
+
+def emit_html(path, transport="serial", extra_head="", extra_body=""):
     presets_arrays = {name: preset_array(v) for name, v in PRESETS.items()}
+    tjs = SERIAL_TRANSPORT_JS if transport == "serial" else WASM_TRANSPORT_JS
+    tui = SERIAL_TRANSPORT_UI if transport == "serial" else WASM_TRANSPORT_UI
     html = (HTML_TEMPLATE
             .replace("__PARAMS_JSON__", json.dumps(PARAMS))
             .replace("__PRESETS_JSON__", json.dumps(presets_arrays))
             .replace("__NUM_PARAMS__", str(len(PARAMS)))
             .replace("__LAYOUT_VERSION__", str(layout_version()))
-            .replace("__SECTIONS_JSON__", json.dumps(SECTIONS)))
+            .replace("__SECTIONS_JSON__", json.dumps(SECTIONS))
+            .replace("__TRANSPORT_JS__", tjs)
+            .replace("__TRANSPORT_UI__", tui)
+            .replace("__EXTRA_HEAD__", extra_head)
+            .replace("__EXTRA_BODY__", extra_body))
     with open(path, "w") as f:
         f.write(html)
     print(f"wrote {path}  ({len(PRESETS)} presets)")
@@ -1237,3 +1265,7 @@ if __name__ == "__main__":
     emit_header(os.path.join(out, "parameters.h"))
     emit_temperaments(os.path.join(out, "temperaments.h"))
     emit_html(os.path.join(out, "index.html"))
+    emu_dir = os.path.join(out, "emulator")
+    if os.path.isdir(emu_dir):
+        emit_html(os.path.join(emu_dir, "emulator.html"), transport="wasm",
+                  extra_head=EMU_EXTRA_HEAD, extra_body=EMU_EXTRA_BODY)

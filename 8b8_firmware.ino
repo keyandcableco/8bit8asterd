@@ -116,6 +116,24 @@ struct ToneParams {
 
 static uint8_t params[NUM_PARAMS];
 
+// MIDI CC control. Every parameter answers to a CC so the box can be driven
+// from whatever controller someone already owns. Defaults are laid out from
+// CC_BASE upward, in the 70-119 "sound controller / undefined" range, which
+// avoids mod wheel, volume, sustain, the bank-select LSBs and the channel
+// mode messages. Any of them can be re-learned to whatever a controller
+// actually sends, and the map rides along in EEPROM with the parameters.
+#define CC_BASE 70
+#define CC_NONE 255
+static uint8_t ccMap[NUM_PARAMS];
+static uint8_t ccLearnTarget = CC_NONE;   // parameter awaiting the next CC
+
+static void loadDefaultCcMap() {
+  for (uint8_t i = 0; i < NUM_PARAMS; i++) {
+    uint8_t cc = CC_BASE + i;
+    ccMap[i] = (cc <= 119) ? cc : CC_NONE;   // past 119 there is no room left
+  }
+}
+
 // AY envelope shapes that loop continuously (P_BUZZ_SHAPE is an index here):
 static const uint8_t buzzShapes[4] PROGMEM = { 8, 10, 12, 14 };
 
@@ -144,6 +162,7 @@ static void saveParamsToEEPROM() {
   EEPROM.update(3, NUM_PARAMS);
   for (uint8_t i = 0; i < NUM_PARAMS; i++) {
     EEPROM.update(4 + i, params[i]);
+    EEPROM.update(4 + NUM_PARAMS + i, ccMap[i]);
   }
 }
 
@@ -154,6 +173,8 @@ static bool loadParamsFromEEPROM() {
   }
   for (uint8_t i = 0; i < NUM_PARAMS; i++) {
     setParam(i, EEPROM.read(4 + i)); // clamp on the way in
+    uint8_t cc = EEPROM.read(4 + NUM_PARAMS + i);
+    ccMap[i] = (cc <= 119 || cc == CC_NONE) ? cc : CC_NONE;
   }
   return true;
 }
@@ -224,7 +245,18 @@ static void initBusPins() {
   }
 }
 
+#ifdef AY_EMULATOR
+// Emulator seam. The browser build runs this exact firmware, so register
+// writes are handed to the emulated chips instead of being bit-banged onto
+// real pins. Costs nothing on AVR: the macro is not defined there.
+extern void emuWriteReg(uint8_t chip, unsigned char reg, unsigned char db);
+#endif
+
 static void writeReg(uint8_t chip, unsigned char reg, unsigned char db) {
+#ifdef AY_EMULATOR
+  emuWriteReg(chip, reg, db);
+  return;
+#endif
   // Same BC1-kept-low NACT/BAR/IAB/DWS sequencing as the original, just
   // routed through direct port writes instead of digitalWrite().
   //
@@ -1537,6 +1569,40 @@ static void sendLayout() {
   Serial.println(NUM_PARAMS);
 }
 
+// Maps an incoming CC onto a parameter, or binds it if the panel has armed
+// MIDI learn. The reply is the same V:<idx>:<value> line a panel edit
+// produces, so turning a knob on a controller moves the on-screen control.
+static void handleControlChange(uint8_t cc, uint8_t value) {
+  if (ccLearnTarget != CC_NONE) {
+    uint8_t target = ccLearnTarget;
+    ccLearnTarget = CC_NONE;
+    // Free the CC from whatever else held it, so one control cannot end up
+    // driving two parameters at once.
+    for (uint8_t i = 0; i < NUM_PARAMS; i++) if (ccMap[i] == cc) ccMap[i] = CC_NONE;
+    ccMap[target] = cc;
+    Serial.print(F("CC:"));
+    Serial.print(target);
+    Serial.print(':');
+    Serial.println(cc);
+    return;
+  }
+
+  for (uint8_t i = 0; i < NUM_PARAMS; i++) {
+    if (ccMap[i] != cc) continue;
+    // 0..127 spread across the parameter's own range.
+    int lo = pgm_read_byte(&PARAM_MIN[i]);
+    int hi = pgm_read_byte(&PARAM_MAX[i]);
+    int v  = lo + (((int)value * (hi - lo)) + 63) / 127;
+    setParam(i, v);
+    recalcDerived();
+    Serial.print(F("V:"));
+    Serial.print(i);
+    Serial.print(':');
+    Serial.println(params[i]);
+    return;
+  }
+}
+
 static void sendPreset() {
   Serial.print(F("PRESET:"));
   for (uint8_t i = 0; i < NUM_PARAMS; i++) {
@@ -1558,6 +1624,31 @@ static void handleCommand(char *cmd) {
     Serial.print(idx);
     Serial.print(':');
     Serial.println(params[idx]);
+  }
+  else if (strncmp(cmd, "LEARN:", 6) == 0) {
+    uint8_t idx = (uint8_t)atoi(cmd + 6);
+    if (idx < NUM_PARAMS) {
+      ccLearnTarget = idx;
+      Serial.print(F("LEARNING:"));
+      Serial.println(idx);
+    }
+  }
+  else if (strncmp(cmd, "UNLEARN:", 8) == 0) {
+    uint8_t idx = (uint8_t)atoi(cmd + 8);
+    if (idx < NUM_PARAMS) {
+      ccMap[idx] = CC_NONE;
+      Serial.print(F("CC:"));
+      Serial.print(idx);
+      Serial.println(F(":255"));
+    }
+  }
+  else if (strcmp(cmd, "CCMAP") == 0) {
+    Serial.print(F("CCMAP:"));
+    for (uint8_t i = 0; i < NUM_PARAMS; i++) {
+      Serial.print(ccMap[i]);
+      if (i < NUM_PARAMS - 1) Serial.print(',');
+    }
+    Serial.println();
   }
   else if (strcmp(cmd, "DIAG") == 0) {
     // Voice map: index:chip/what/stage/age-in-ticks. This is what to read
@@ -1583,6 +1674,7 @@ static void handleCommand(char *cmd) {
   else if (strcmp(cmd, "DUMP") == 0) {
     sendLayout();
     sendPreset();
+    handleCommand((char *)"CCMAP");
   }
   else if (strncmp(cmd, "LOAD:", 5) == 0) {
     char *p = cmd + 5;
@@ -1609,6 +1701,7 @@ static void handleCommand(char *cmd) {
   }
   else if (strcmp(cmd, "DEFAULTS") == 0) {
     loadDefaults();
+    loadDefaultCcMap();
     recalcDerived();
     sendPreset();
   }
@@ -1863,6 +1956,7 @@ void setup() {
 
   // Parameter bank: restore the last EEPROM-saved bank if it matches the
   // current generated layout, otherwise start from the generated defaults.
+  loadDefaultCcMap();
   if (!loadParamsFromEEPROM()) {
     loadDefaults();
   }
@@ -1910,6 +2004,9 @@ void handleMidiMessage(midiEventPacket_t &rx) {
   else if (rx.header==0xB) {// Control Change
     if (rx.byte2 == 0x78 || rx.byte2 == 0x79 || rx.byte2 == 0x7B) {// AllSoundOff, ResetAllControllers, or AllNotesOff
       softReset();
+    }
+    else {
+      handleControlChange(rx.byte2, rx.byte3);
     }
   }
 }
