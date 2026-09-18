@@ -902,6 +902,8 @@ __TRANSPORT_UI__
         <div class="switch" id="sharpSw"><div class="led"></div></div>
         <span class="label">Hold</span>
         <div class="switch" id="latchSw"><div class="led"></div></div>
+        <span class="label">Barry</span>
+        <div class="switch" id="barrySw"><div class="led"></div></div>
         <span class="spacer"></span>
         <span class="label" id="chordName">&mdash;</span>
       </div>
@@ -1292,36 +1294,68 @@ document.getElementById('diagBtn').onclick = () => send('DIAG');
 
 const ROOTS  = [['F',53],['C',48],['G',55],['D',50],['A',57],['E',52],['B',59]];
 const QUALITY = [
-  { suffix: '',  name: 'maj', tones: [0,4,7]    },
-  { suffix: 'm', name: 'min', tones: [0,3,7]    },
-  { suffix: '7', name: '7th', tones: [0,4,7,10] }
+  { suffix: '',  name: 'Maj' },
+  { suffix: 'm', name: 'Min' },
+  { suffix: '7', name: '7th' }
 ];
+
+// Button combinations, following the minichord: a row can be pressed on its
+// own or stacked with others in the same column. The key is the sorted set
+// of held rows, so "0" is major alone and "02" is major plus 7th.
+//
+// barry: Barry Harris treats the major sixth and the diminished seventh as
+// the two halves of one scale, so in that mode a major becomes a sixth, a
+// minor becomes a minor sixth, and a diminished becomes a diminished
+// seventh. The sevenths are already four-note chords and are left alone.
+const CHORDS = {
+  '0':   { tones: [0,4,7],    suffix: '',     barry: [0,4,7,9], bSuffix: '6'    },
+  '1':   { tones: [0,3,7],    suffix: 'm',    barry: [0,3,7,9], bSuffix: 'm6'   },
+  '2':   { tones: [0,4,7,10], suffix: '7'     },
+  '01':  { tones: [0,3,6],    suffix: 'dim',  barry: [0,3,6,9], bSuffix: 'dim7' },
+  '02':  { tones: [0,4,7,11], suffix: 'maj7'  },
+  '12':  { tones: [0,3,7,10], suffix: 'm7'    },
+  '012': { tones: [0,4,8],    suffix: 'aug'   }
+};
 const STRUM_SEGMENTS = 12;
 
-let sharpOn = false, latchOn = false;
-let heldChord = null;          // {root, quality} currently sounding
-let chordNotes = [];           // midi notes we switched on
-let strumNotes = [];           // the harp ladder for that chord
+let sharpOn = false, latchOn = false, barryOn = false;
+let activeRoot = 1;               // column currently selected
+let heldRows = new Set();         // rows held within that column
+let chordNotes = [];
+let strumNotes = [];
 let lastStrumSeg = -1, strumming = false;
 
-function chordFor(rootIdx, qIdx){
-  const base = ROOTS[rootIdx][1] + (sharpOn ? 1 : 0);
-  return QUALITY[qIdx].tones.map(t => base + t);
+function chordSpec(){
+  const key = [...heldRows].sort().join('');
+  const c = CHORDS[key];
+  if (!c) return null;
+  const useBarry = barryOn && c.barry;
+  return {
+    tones:  useBarry ? c.barry   : c.tones,
+    suffix: useBarry ? c.bSuffix : c.suffix
+  };
+}
+
+function chordFor(){
+  const spec = chordSpec();
+  if (!spec) return [];
+  const base = ROOTS[activeRoot][1] + (sharpOn ? 1 : 0);
+  return spec.tones.map(t => base + t);
 }
 
 // The harp: chord tones stacked upward until twelve sections are filled, so
 // a strum walks the chord rather than a scale.
-function ladderFor(rootIdx, qIdx){
-  const tones = QUALITY[qIdx].tones;
-  let base = ROOTS[rootIdx][1] + (sharpOn ? 1 : 0) + 12;
+function ladderFor(){
+  const spec = chordSpec();
+  if (!spec) return [];
+  const tones = spec.tones;
+  const base = ROOTS[activeRoot][1] + (sharpOn ? 1 : 0) + 12;
   let out = [];
   for (let i = 0; i < STRUM_SEGMENTS; i++){
     out.push(base + tones[i % tones.length] + 12 * Math.floor(i / tones.length));
   }
-  // The firmware's note table covers MIDI 24..96. Twelve chord tones stacked
-  // can overshoot that, and anything past the top would clamp onto the same
-  // note, so drop the whole ladder by octaves until it fits. Shifting all of
-  // it keeps the shape of the strum intact.
+  // The firmware's note table covers MIDI 24..96, and anything past the top
+  // would clamp onto one pitch, so drop the ladder by octaves until it fits.
   while (Math.max.apply(null, out) > 96) out = out.map(n => n - 12);
   while (Math.min.apply(null, out) < 24) out = out.map(n => n + 12);
   return out;
@@ -1332,23 +1366,42 @@ function releaseChord(){
   chordNotes = [];
 }
 
-function pressChord(rootIdx, qIdx){
+// A chord change happens on a PRESS, never on a release. That is the
+// minichord's rule and it matters: timing a release across three buttons is
+// hopeless, and without it every complex chord would collapse through
+// unwanted intermediate chords on the way out.
+function pressRow(rootIdx, rowIdx){
+  if (rootIdx !== activeRoot){ heldRows.clear(); activeRoot = rootIdx; }
+  heldRows.add(rowIdx);
+  refreshChord();
+}
+
+function releaseRow(rowIdx){
+  heldRows.delete(rowIdx);
+  if (heldRows.size === 0 && !latchOn){
+    releaseChord();
+    strumNotes = [];
+  }
+  paintChords();
+}
+
+function refreshChord(){
+  const spec = chordSpec();
+  if (!spec) return;
   releaseChord();
-  heldChord = { rootIdx, qIdx };
-  chordNotes = chordFor(rootIdx, qIdx);
+  chordNotes = chordFor();
   chordNotes.forEach(n => playNote(n, 100, 0));
-  strumNotes = ladderFor(rootIdx, qIdx);
-  document.getElementById('chordName').textContent =
-    ROOTS[rootIdx][0] + (sharpOn ? '#' : '') + QUALITY[qIdx].suffix;
+  strumNotes = ladderFor();
+  const el = document.getElementById('chordName');
+  if (el) el.textContent = ROOTS[activeRoot][0] + (sharpOn ? '#' : '') + spec.suffix;
   paintChords();
 }
 
 function paintChords(){
   document.querySelectorAll('.chordbtn').forEach(b => {
-    const on = heldChord && (b.dataset.root | 0) === heldChord.rootIdx
-                         && (b.dataset.q | 0) === heldChord.qIdx;
-    b.classList.toggle('latched', !!on && latchOn);
-    b.classList.toggle('down', !!on && !latchOn);
+    const on = (b.dataset.root | 0) === activeRoot && heldRows.has(b.dataset.q | 0);
+    b.classList.toggle('latched', on && latchOn);
+    b.classList.toggle('down', on && !latchOn);
   });
 }
 
@@ -1372,11 +1425,10 @@ function buildPlaySurface(){
       b.addEventListener('pointerdown', e => {
         e.preventDefault();
         b.setPointerCapture(e.pointerId);
-        pressChord(ri, qi);
+        pressRow(ri, qi);
       });
-      b.addEventListener('pointerup', () => {
-        if (!latchOn) { releaseChord(); heldChord = null; paintChords(); }
-      });
+      b.addEventListener('pointerup', () => releaseRow(qi));
+      b.addEventListener('pointercancel', () => releaseRow(qi));
       grid.appendChild(b);
     });
   });
@@ -1429,13 +1481,19 @@ function buildPlaySurface(){
   sharpSw.onclick = () => {
     sharpOn = !sharpOn;
     sharpSw.classList.toggle('active', sharpOn);
-    if (heldChord) pressChord(heldChord.rootIdx, heldChord.qIdx);
+    if (heldRows.size) refreshChord();
   };
   latchSw.onclick = () => {
     latchOn = !latchOn;
     latchSw.classList.toggle('active', latchOn);
-    if (!latchOn) { releaseChord(); heldChord = null; }
+    if (!latchOn){ heldRows.clear(); releaseChord(); strumNotes = []; }
     paintChords();
+  };
+  const barrySw = document.getElementById('barrySw');
+  if (barrySw) barrySw.onclick = () => {
+    barryOn = !barryOn;
+    barrySw.classList.toggle('active', barryOn);
+    if (heldRows.size) refreshChord();
   };
 
   buildKeyboard();
@@ -1796,18 +1854,31 @@ function gpPoll(){
 }
 
 function gpChords(btn, hit){
-  // Shoulders and left/right walk the seven roots; face buttons pick quality.
+  // Shoulders and left/right walk the seven roots; A, B and X are the three
+  // rows and STACK exactly as they do on the matrix, so A+X is a major
+  // seventh, B+X a minor seventh, A+B diminished and all three augmented.
   if (hit(GP.LEFT)  || hit(GP.L1)) gpRootIdx = (gpRootIdx + ROOTS.length - 1) % ROOTS.length;
   if (hit(GP.RIGHT) || hit(GP.R1)) gpRootIdx = (gpRootIdx + 1) % ROOTS.length;
   if (hit(GP.Y)){
     sharpOn = !sharpOn;
     const sw = document.getElementById('sharpSw');
     if (sw) sw.classList.toggle('active', sharpOn);
+    if (heldRows.size) refreshChord();
   }
-  if (hit(GP.A)) pressChord(gpRootIdx, 0);
-  if (hit(GP.B)) pressChord(gpRootIdx, 1);
-  if (hit(GP.X)) pressChord(gpRootIdx, 2);
-  if (hit(GP.START)){ releaseChord(); heldChord = null; paintChords(); }
+  if (hit(GP.R2)){
+    barryOn = !barryOn;
+    const sw = document.getElementById('barrySw');
+    if (sw) sw.classList.toggle('active', barryOn);
+    if (heldRows.size) refreshChord();
+  }
+
+  // Press adds a row and re-forms the chord; release only drops the row, so
+  // letting go of one button of a stack never sounds the intermediate chord.
+  const rows = [[GP.A, 0], [GP.B, 1], [GP.X, 2]];
+  rows.forEach(([b, row]) => { if (hit(b)) pressRow(gpRootIdx, row); });
+  rows.forEach(([b, row]) => { if (!btn[b] && gpPrev[b]) releaseRow(row); });
+
+  if (hit(GP.START)){ heldRows.clear(); releaseChord(); strumNotes = []; paintChords(); }
 }
 
 function gpDrums(hit){
