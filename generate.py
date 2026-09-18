@@ -1688,7 +1688,19 @@ const SEQ_PATTERNS = {
 };
 
 let seqGrid = SEQ_ROWS.map(() => new Array(SEQ_STEPS).fill(false));
-let seqPlaying = false, seqStep = 0, seqTimer = null, seqNext = 0;
+let seqPlaying = false;
+let seqCells = [];             // cached elements: querying 128 cells per step was wasteful
+let seqLastPainted = -1;
+
+// Rows are handed to the engine as a 16-bit mask each, which is all the
+// timing side needs to know about the pattern.
+function seqRowsForEngine(){
+  return SEQ_ROWS.map((r, ri) => {
+    let mask = 0;
+    for (let s = 0; s < SEQ_STEPS; s++) if (seqGrid[ri][s]) mask |= (1 << s);
+    return { note: r.note, mask };
+  });
+}
 
 function buildSequencer(){
   const head = document.getElementById('seqHead');
@@ -1709,16 +1721,18 @@ function buildSequencer(){
     nm.className = 'seqname'; nm.textContent = r.name;
     nm.onclick = () => playNote(r.note, 110, 9);       // audition
     row.appendChild(nm);
+    seqCells[ri] = [];
     for (let si = 0; si < SEQ_STEPS; si++){
       const c = document.createElement('div');
       c.className = 'step' + (si % 4 === 0 ? ' beat' : '');
-      c.dataset.r = ri; c.dataset.s = si;
       c.addEventListener('pointerdown', e => {
         e.preventDefault();
         seqGrid[ri][si] = !seqGrid[ri][si];
         c.classList.toggle('on', seqGrid[ri][si]);
         if (seqGrid[ri][si]) playNote(r.note, 110, 9);
+        seqEnginePattern(seqRowsForEngine());
       });
+      seqCells[ri][si] = c;
       row.appendChild(c);
     }
     rows.appendChild(row);
@@ -1733,19 +1747,37 @@ function buildSequencer(){
   sel.onchange = () => loadPattern(sel.value);
 
   const tempo = document.getElementById('seqTempo');
-  tempo.oninput = () => { document.getElementById('seqBpm').textContent = tempo.value + ' BPM'; };
+  tempo.oninput = () => {
+    document.getElementById('seqBpm').textContent = tempo.value + ' BPM';
+    seqEngineTempo(parseInt(tempo.value, 10) || 110);
+  };
 
   document.getElementById('seqPlay').onclick = toggleSeq;
   document.getElementById('seqClear').onclick = () => loadPattern('Empty');
 
   loadPattern('Four/Four');
   document.getElementById('seqPreset').value = 'Four/Four';
+  requestAnimationFrame(paintPlayhead);
 }
 
 function paintSeq(){
-  document.querySelectorAll('.step').forEach(c => {
-    c.classList.toggle('on', seqGrid[c.dataset.r | 0][c.dataset.s | 0]);
-  });
+  for (let r = 0; r < seqCells.length; r++)
+    for (let s = 0; s < SEQ_STEPS; s++)
+      seqCells[r][s].classList.toggle('on', seqGrid[r][s]);
+}
+
+// The playhead is read from the engine rather than set by it, so the
+// display can lag a frame without the timing itself being affected.
+function paintPlayhead(){
+  const step = seqPlaying ? seqEngineStep() : -1;
+  if (step !== seqLastPainted){
+    if (seqLastPainted >= 0)
+      for (let r = 0; r < seqCells.length; r++) seqCells[r][seqLastPainted].classList.remove('playing');
+    if (step >= 0)
+      for (let r = 0; r < seqCells.length; r++) seqCells[r][step].classList.add('playing');
+    seqLastPainted = step;
+  }
+  requestAnimationFrame(paintPlayhead);
 }
 
 function loadPattern(name){
@@ -1757,37 +1789,21 @@ function loadPattern(name){
     return row;
   });
   paintSeq();
-}
-
-function seqTick(){
-  document.querySelectorAll('.step.playing').forEach(c => c.classList.remove('playing'));
-  SEQ_ROWS.forEach((r, ri) => {
-    if (seqGrid[ri][seqStep]) playNote(r.note, 110, 9);
-    const cell = document.querySelector('.step[data-r="' + ri + '"][data-s="' + seqStep + '"]');
-    if (cell) cell.classList.add('playing');
-  });
-  seqStep = (seqStep + 1) % SEQ_STEPS;
-
-  const bpm = parseInt(document.getElementById('seqTempo').value, 10) || 110;
-  const interval = 60000 / bpm / 4;            // sixteenth notes
-  seqNext += interval;
-  const drift = seqNext - performance.now();
-  seqTimer = setTimeout(seqTick, Math.max(0, drift));
+  seqEnginePattern(seqRowsForEngine());
 }
 
 function toggleSeq(){
   const btn = document.getElementById('seqPlay');
+  const bpm = parseInt(document.getElementById('seqTempo').value, 10) || 110;
   if (seqPlaying){
-    clearTimeout(seqTimer); seqTimer = null;
+    seqEngineStop();
     seqPlaying = false; btn.textContent = 'Play';
-    document.querySelectorAll('.step.playing').forEach(c => c.classList.remove('playing'));
   } else {
+    seqEnginePattern(seqRowsForEngine());
+    seqEngineStart(bpm, SEQ_STEPS);
     seqPlaying = true; btn.textContent = 'Stop';
-    seqStep = 0; seqNext = performance.now();
-    seqTick();
   }
 }
-
 
 /* ==== Gamepad =========================================================== */
 // Standard-mapping layout, which is what an 8BitDo reports over Bluetooth:
@@ -2128,13 +2144,13 @@ def emit_temperaments(path):
     print(f"wrote {path}  ({len(rows)} temperaments, +/-{span} cents)")
 
 
-SERIAL_TRANSPORT_JS = "/* ==== Web Serial ======================================================== */\nlet port = null, reader = null, writer = null, inBuf = '';\nconst statusPill = document.getElementById('statusPill');\nconst statusText = document.getElementById('statusText');\nconst connectBtn = document.getElementById('connectBtn');\nconst disconnectBtn = document.getElementById('disconnectBtn');\n\nfunction setStatus(mode, text){\n  statusPill.className = 'status-pill' + (mode ? ' ' + mode : '');\n  statusText.textContent = text;\n}\n\nasync function connect(){\n  try{\n    port = await navigator.serial.requestPort();\n    await port.open({ baudRate: 115200 });\n    const dec = new TextDecoderStream();\n    port.readable.pipeTo(dec.writable).catch(()=>{});\n    reader = dec.readable.getReader();\n    const enc = new TextEncoderStream();\n    enc.readable.pipeTo(port.writable).catch(()=>{});\n    writer = enc.writable.getWriter();\n    connectBtn.disabled = true; disconnectBtn.disabled = false;\n    setStatus('on','Connected');\n    log('sys','Connected.');\n    readLoop();\n    sawLayout = false;\n    send('DUMP');\n    // Firmware older than the handshake answers DUMP with PRESET: but no\n    // LAYOUT: line at all, which is itself a mismatch worth reporting.\n    setTimeout(() => {\n      if (!sawLayout && port){\n        document.getElementById('mismatchDetail').textContent =\n          'The unit did not report a parameter layout at all, so it predates ' +\n          'this panel. This panel expects layout 0x' +\n          LAYOUT_VERSION.toString(16).toUpperCase() + ' with ' + NUM_PARAMS + ' parameters.';\n        document.getElementById('mismatch').style.display = 'block';\n        log('err', 'No LAYOUT reply \\u2014 flashed firmware is out of date.');\n      }\n    }, 1500);\n  }catch(err){\n    setStatus('err','Connect failed');\n    log('err','Connect failed: ' + err.message);\n  }\n}\n\nasync function disconnect(){\n  try{ await reader?.cancel(); }catch(e){}\n  try{ await writer?.close(); }catch(e){}\n  try{ await port?.close(); }catch(e){}\n  reader = writer = port = null;\n  connectBtn.disabled = false; disconnectBtn.disabled = true;\n  setStatus('','Disconnected');\n  log('sys','Disconnected.');\n}\n\nasync function readLoop(){\n  try{\n    while(true){\n      const { value, done } = await reader.read();\n      if (done) break;\n      inBuf += value;\n      let idx;\n      while ((idx = inBuf.indexOf('\\n')) >= 0){\n        const line = inBuf.slice(0, idx).replace('\\r','');\n        inBuf = inBuf.slice(idx + 1);\n        if (line.length) handleLine(line);\n      }\n    }\n  }catch(err){\n    log('err','Read error: ' + err.message);\n  }finally{\n    if (port) disconnect();\n  }\n}\n\nfunction playNote(note, vel, chan){ send('NON:' + (chan||0) + ':' + note + ':' + (vel||100)); }\nfunction stopNote(note, chan){ send('NOF:' + (chan||0) + ':' + note); }\n\nfunction send(cmd){\n  log('tx','\\u00bb ' + cmd);\n  if (writer) writer.write(cmd + '\\n').catch(err => log('err','Write failed: ' + err.message));\n}\n\n\n\nconnectBtn.onclick = connect;\ndisconnectBtn.onclick = disconnect;\nif (!('serial' in navigator)){\n  document.getElementById('unsupported').style.display = 'block';\n  connectBtn.disabled = true;\n}\n\n"
+SERIAL_TRANSPORT_JS = "/* ==== Web Serial ======================================================== */\nlet port = null, reader = null, writer = null, inBuf = '';\nconst statusPill = document.getElementById('statusPill');\nconst statusText = document.getElementById('statusText');\nconst connectBtn = document.getElementById('connectBtn');\nconst disconnectBtn = document.getElementById('disconnectBtn');\n\nfunction setStatus(mode, text){\n  statusPill.className = 'status-pill' + (mode ? ' ' + mode : '');\n  statusText.textContent = text;\n}\n\nasync function connect(){\n  try{\n    port = await navigator.serial.requestPort();\n    await port.open({ baudRate: 115200 });\n    const dec = new TextDecoderStream();\n    port.readable.pipeTo(dec.writable).catch(()=>{});\n    reader = dec.readable.getReader();\n    const enc = new TextEncoderStream();\n    enc.readable.pipeTo(port.writable).catch(()=>{});\n    writer = enc.writable.getWriter();\n    connectBtn.disabled = true; disconnectBtn.disabled = false;\n    setStatus('on','Connected');\n    log('sys','Connected.');\n    readLoop();\n    sawLayout = false;\n    send('DUMP');\n    // Firmware older than the handshake answers DUMP with PRESET: but no\n    // LAYOUT: line at all, which is itself a mismatch worth reporting.\n    setTimeout(() => {\n      if (!sawLayout && port){\n        document.getElementById('mismatchDetail').textContent =\n          'The unit did not report a parameter layout at all, so it predates ' +\n          'this panel. This panel expects layout 0x' +\n          LAYOUT_VERSION.toString(16).toUpperCase() + ' with ' + NUM_PARAMS + ' parameters.';\n        document.getElementById('mismatch').style.display = 'block';\n        log('err', 'No LAYOUT reply \\u2014 flashed firmware is out of date.');\n      }\n    }, 1500);\n  }catch(err){\n    setStatus('err','Connect failed');\n    log('err','Connect failed: ' + err.message);\n  }\n}\n\nasync function disconnect(){\n  try{ await reader?.cancel(); }catch(e){}\n  try{ await writer?.close(); }catch(e){}\n  try{ await port?.close(); }catch(e){}\n  reader = writer = port = null;\n  connectBtn.disabled = false; disconnectBtn.disabled = true;\n  setStatus('','Disconnected');\n  log('sys','Disconnected.');\n}\n\nasync function readLoop(){\n  try{\n    while(true){\n      const { value, done } = await reader.read();\n      if (done) break;\n      inBuf += value;\n      let idx;\n      while ((idx = inBuf.indexOf('\\n')) >= 0){\n        const line = inBuf.slice(0, idx).replace('\\r','');\n        inBuf = inBuf.slice(idx + 1);\n        if (line.length) handleLine(line);\n      }\n    }\n  }catch(err){\n    log('err','Read error: ' + err.message);\n  }finally{\n    if (port) disconnect();\n  }\n}\n\nfunction playNote(note, vel, chan){ send('NON:' + (chan||0) + ':' + note + ':' + (vel||100)); }\nfunction stopNote(note, chan){ send('NOF:' + (chan||0) + ':' + note); }\n\nfunction send(cmd){\n  log('tx','\\u00bb ' + cmd);\n  if (writer) writer.write(cmd + '\\n').catch(err => log('err','Write failed: ' + err.message));\n}\n\n\n\nconnectBtn.onclick = connect;\ndisconnectBtn.onclick = disconnect;\nif (!('serial' in navigator)){\n  document.getElementById('unsupported').style.display = 'block';\n  connectBtn.disabled = true;\n}\n\n\n/* ---- sequencer engine: timer driven ---- */\n// Notes reach the unit over a serial link, so there is nothing to be\n// sample-accurate against. A drift-corrected timer is the best available:\n// each tick is scheduled from when it SHOULD have fired, not from now.\nlet seqRowsCache = [], seqTimer = null, seqNextAt = 0, seqPos = -1, seqBpm = 110, seqLen = 16;\n\nfunction seqEnginePattern(rows){ seqRowsCache = rows; }\nfunction seqEngineTempo(bpm){ seqBpm = bpm; }\nfunction seqEngineStep(){ return seqPos; }\nfunction seqEngineStop(){\n  if (seqTimer) clearTimeout(seqTimer);\n  seqTimer = null; seqPos = -1;\n}\nfunction seqEngineStart(bpm, steps){\n  seqBpm = bpm; seqLen = steps; seqPos = 0;\n  seqNextAt = performance.now();\n  const tick = () => {\n    seqRowsCache.forEach(r => {\n      if (r.mask & (1 << seqPos)) playNote(r.note, 110, 9);\n    });\n    seqPos = (seqPos + 1) % seqLen;\n    seqNextAt += 60000 / seqBpm / 4;\n    seqTimer = setTimeout(tick, Math.max(0, seqNextAt - performance.now()));\n  };\n  tick();\n}\n"
 
 SERIAL_TRANSPORT_UI = '        <button class="btn" id="connectBtn">Connect</button>\n        <button class="btn danger" id="disconnectBtn" disabled>Disconnect</button>'
 
 WASM_TRANSPORT_UI = '        <button class="btn" id="startBtn">Start Audio</button>\n        <button class="btn danger" id="stopBtn" disabled>Stop</button>'
 
-WASM_TRANSPORT_JS = "/* ==== Emulated transport ================================================ */\n// The firmware itself, compiled to WebAssembly, driving three emulated\n// AY-3-8910s into Web Audio. The panel above is byte-identical to the one\n// that talks to real hardware over serial -- the only thing that changes is\n// what send() writes to. Same firmware, same parameters, same protocol.\n\nlet audioCtx = null, node = null, ready = false, pollTimer = null;\nconst HEAP_SAMPLES = 2048;\nlet heapPtr = 0;\n\nconst statusPill = document.getElementById('statusPill');\nconst statusText = document.getElementById('statusText');\nconst startBtn = document.getElementById('startBtn');\nconst stopBtn  = document.getElementById('stopBtn');\n\nfunction setStatus(mode, text){\n  statusPill.className = 'status-pill' + (mode ? ' ' + mode : '');\n  statusText.textContent = text;\n}\n\nfunction send(cmd){\n  log('tx','\\u00bb ' + cmd);\n  if (ready) Module.ccall('emu_send_line', null, ['string'], [cmd]);\n}\n\nfunction pollReplies(){\n  if (!ready) return;\n  const s = Module.ccall('emu_read_lines', 'string', [], []);\n  if (!s) return;\n  for (const line of s.split('\\n')) if (line.length) handleLine(line);\n}\n\nasync function startAudio(){\n  if (!window.Module || !Module.ccall){\n    log('err','The emulator core has not loaded. Did you run build-wasm.sh?');\n    setStatus('err','No core');\n    return;\n  }\n  audioCtx = new (window.AudioContext || window.webkitAudioContext)();\n  await audioCtx.resume();\n\n  Module.ccall('emu_init', null, ['number'], [audioCtx.sampleRate]);\n  heapPtr = Module._malloc(HEAP_SAMPLES * 4);\n  ready = true;\n\n  node = audioCtx.createScriptProcessor(HEAP_SAMPLES, 0, 1);\n  node.onaudioprocess = (e) => {\n    const out = e.outputBuffer.getChannelData(0);\n    Module.ccall('emu_render', null, ['number','number'], [heapPtr, out.length]);\n    out.set(Module.HEAPF32.subarray(heapPtr >> 2, (heapPtr >> 2) + out.length));\n  };\n  node.connect(audioCtx.destination);\n\n  startBtn.disabled = true; stopBtn.disabled = false;\n  setStatus('on','Running');\n  log('sys','Emulator running at ' + audioCtx.sampleRate + 'Hz.');\n\n  pollTimer = setInterval(pollReplies, 60);\n  send('DUMP');\n}\n\nfunction stopAudio(){\n  if (node) { node.disconnect(); node = null; }\n  if (audioCtx) { audioCtx.close(); audioCtx = null; }\n  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }\n  ready = false;\n  startBtn.disabled = false; stopBtn.disabled = true;\n  setStatus('','Stopped');\n}\n\nstartBtn.onclick = startAudio;\nstopBtn.onclick  = stopAudio;\n\n/* ---- playing it ---- */\nfunction playNote(note, vel, chan){\n  if (ready) Module.ccall('emu_note_on', null, ['number','number','number'], [chan||0, note, vel||100]);\n}\nfunction stopNote(note, chan){\n  if (ready) Module.ccall('emu_note_off', null, ['number','number'], [chan||0, note]);\n}\n\n// Real MIDI hardware, if the browser offers it.\nif (navigator.requestMIDIAccess){\n  navigator.requestMIDIAccess().then(a => {\n    for (const inp of a.inputs.values()){\n      inp.onmidimessage = m => {\n        const [st, d1, d2] = m.data;\n        const ch = st & 0x0F, cmd = st & 0xF0;\n        if (cmd === 0x90 && d2 > 0) playNote(d1, d2, ch);\n        else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) stopNote(d1, ch);\n      };\n    }\n    log('sys','MIDI input connected.');\n  }).catch(() => {});\n}\n"
+WASM_TRANSPORT_JS = "/* ==== Emulated transport ================================================ */\n// The firmware itself, compiled to WebAssembly, driving three emulated\n// AY-3-8910s into Web Audio. The panel above is byte-identical to the one\n// that talks to real hardware over serial -- the only thing that changes is\n// what send() writes to. Same firmware, same parameters, same protocol.\n\nlet audioCtx = null, node = null, ready = false, pollTimer = null;\nconst HEAP_SAMPLES = 2048;\nlet heapPtr = 0;\n\nconst statusPill = document.getElementById('statusPill');\nconst statusText = document.getElementById('statusText');\nconst startBtn = document.getElementById('startBtn');\nconst stopBtn  = document.getElementById('stopBtn');\n\nfunction setStatus(mode, text){\n  statusPill.className = 'status-pill' + (mode ? ' ' + mode : '');\n  statusText.textContent = text;\n}\n\nfunction send(cmd){\n  log('tx','\\u00bb ' + cmd);\n  if (ready) Module.ccall('emu_send_line', null, ['string'], [cmd]);\n}\n\nfunction pollReplies(){\n  if (!ready) return;\n  const s = Module.ccall('emu_read_lines', 'string', [], []);\n  if (!s) return;\n  for (const line of s.split('\\n')) if (line.length) handleLine(line);\n}\n\nasync function startAudio(){\n  if (!window.Module || !Module.ccall){\n    log('err','The emulator core has not loaded. Did you run build-wasm.sh?');\n    setStatus('err','No core');\n    return;\n  }\n  audioCtx = new (window.AudioContext || window.webkitAudioContext)();\n  await audioCtx.resume();\n\n  Module.ccall('emu_init', null, ['number'], [audioCtx.sampleRate]);\n  heapPtr = Module._malloc(HEAP_SAMPLES * 4);\n  ready = true;\n\n  node = audioCtx.createScriptProcessor(HEAP_SAMPLES, 0, 1);\n  node.onaudioprocess = (e) => {\n    const out = e.outputBuffer.getChannelData(0);\n    Module.ccall('emu_render', null, ['number','number'], [heapPtr, out.length]);\n    out.set(Module.HEAPF32.subarray(heapPtr >> 2, (heapPtr >> 2) + out.length));\n  };\n  node.connect(audioCtx.destination);\n\n  startBtn.disabled = true; stopBtn.disabled = false;\n  setStatus('on','Running');\n  log('sys','Emulator running at ' + audioCtx.sampleRate + 'Hz.');\n\n  pollTimer = setInterval(pollReplies, 60);\n  send('DUMP');\n}\n\nfunction stopAudio(){\n  if (node) { node.disconnect(); node = null; }\n  if (audioCtx) { audioCtx.close(); audioCtx = null; }\n  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }\n  ready = false;\n  startBtn.disabled = false; stopBtn.disabled = true;\n  setStatus('','Stopped');\n}\n\nstartBtn.onclick = startAudio;\nstopBtn.onclick  = stopAudio;\n\n/* ---- playing it ---- */\nfunction playNote(note, vel, chan){\n  if (ready) Module.ccall('emu_note_on', null, ['number','number','number'], [chan||0, note, vel||100]);\n}\nfunction stopNote(note, chan){\n  if (ready) Module.ccall('emu_note_off', null, ['number','number'], [chan||0, note]);\n}\n\n// Real MIDI hardware, if the browser offers it.\nif (navigator.requestMIDIAccess){\n  navigator.requestMIDIAccess().then(a => {\n    for (const inp of a.inputs.values()){\n      inp.onmidimessage = m => {\n        const [st, d1, d2] = m.data;\n        const ch = st & 0x0F, cmd = st & 0xF0;\n        if (cmd === 0x90 && d2 > 0) playNote(d1, d2, ch);\n        else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) stopNote(d1, ch);\n      };\n    }\n    log('sys','MIDI input connected.');\n  }).catch(() => {});\n}\n\n/* ---- sequencer engine: timed inside the audio render ---- */\n// Sample-counted in C++ rather than by setTimeout, because on this page the\n// audio callback runs on the main thread and any timer shares it. Measured\n// drift is about one sample over four seconds.\nfunction seqEnginePattern(rows){\n  if (!ready) return;\n  rows.forEach((r, i) => Module.ccall('emu_seq_row', null,\n    ['number','number','number'], [i, r.note, r.mask]));\n}\nfunction seqEngineStart(bpm, steps){\n  if (!ready) return;\n  Module.ccall('emu_seq_start', null, ['number','number'], [bpm, steps]);\n}\nfunction seqEngineTempo(bpm){\n  if (ready) Module.ccall('emu_seq_tempo', null, ['number'], [bpm]);\n}\nfunction seqEngineStop(){\n  if (ready) Module.ccall('emu_seq_stop', null, [], []);\n}\nfunction seqEngineStep(){\n  return ready ? Module.ccall('emu_seq_step', 'number', [], []) : -1;\n}\n"
 
 EMU_EXTRA_HEAD = '<script>var Module = { onRuntimeInitialized: function(){ if (window.onCoreReady) window.onCoreReady(); } };</script>\n<script src="8b8.js"></script>'
 

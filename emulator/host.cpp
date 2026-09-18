@@ -52,8 +52,22 @@ static const double CHIP_STEP_HZ = 1000000.0 / 8.0;
 // Real boards AC-couple the chip output. Without modelling that, the steady
 // DC level a muted channel puts out shows up as offset in the render.
 static double  dcPrev = 0.0, dcOut = 0.0;
+// ---------------------------------------------------------------------------
+// Step sequencer clock
+// ---------------------------------------------------------------------------
+// Timing lives here rather than in JavaScript because setTimeout is at the
+// mercy of the main thread, and on this page the audio callback IS on the
+// main thread. Counting samples inside the render makes the beat exact: a
+// step lands on the sample it should, no matter what the browser is doing.
+static uint16_t seqMask[16];        // one bit per step
+static uint8_t  seqNote[16];
+static int      seqRows = 0, seqSteps = 16, seqCurStep = 0;
+static bool     seqRunning = false;
+static double   seqSamplesPerStep = 0.0, seqAcc = 0.0;
+
 static double  sampleRate   = 44100.0;
 static double  stepCarry    = 0.0;
+static double  loopAccUs    = 0.0;
 static bool    started      = false;
 
 extern "C" {
@@ -61,10 +75,13 @@ extern "C" {
 void emu_init(double rate) {
   sampleRate = rate;
   stepCarry = 0.0;
+  loopAccUs = 0.0;
   dcPrev = dcOut = 0.0;
   emuMicros = 0;
   memset(emuEeprom, 0xFF, sizeof emuEeprom);
   for (int i = 0; i < 3; i++) chips[i].reset();
+  seqRunning = false; seqRows = 0; seqCurStep = 0; seqAcc = 0.0;
+  memset(seqMask, 0, sizeof seqMask);
   setup();
   started = true;
 }
@@ -76,11 +93,31 @@ void emu_render(float *out, int n) {
   const double usPerSample    = 1000000.0 / sampleRate;
 
   for (int i = 0; i < n; i++) {
-    // Advance the firmware's clock, then give it a chance to run. loop() is
-    // called once per sample, which is far more often than it needs but
-    // keeps the 100Hz tick and the microsecond Warp tick honest.
+    // Advance the firmware's clock, then service it. loop() used to run once
+    // per sample, which is 44100 times a second of audio for a firmware whose
+    // fastest timer is 4kHz. Polling at ~8kHz is ample and cuts the work by
+    // about five sixths, which matters on a phone where this shares a thread
+    // with the audio callback.
     emuMicros += (uint64_t)usPerSample;
-    loop();
+    loopAccUs += usPerSample;
+    if (loopAccUs >= 125.0) {      // ~8kHz
+      loopAccUs = 0.0;
+      loop();
+    }
+
+    // Fire sequencer steps on their exact sample.
+    if (seqRunning && seqSamplesPerStep > 0.0) {
+      seqAcc += 1.0;
+      if (seqAcc >= seqSamplesPerStep) {
+        seqAcc -= seqSamplesPerStep;
+        for (int r = 0; r < seqRows; r++) {
+          if (seqMask[r] & (1u << seqCurStep)) {
+            MidiUSB.push(midiEventPacket_t{0x09, 0x99, seqNote[r], 110});
+          }
+        }
+        seqCurStep = (seqCurStep + 1) % seqSteps;
+      }
+    }
 
     stepCarry += stepsPerSample;
     int steps = (int)stepCarry;
@@ -97,6 +134,32 @@ void emu_render(float *out, int n) {
     out[i] = (float)dcOut;
   }
 }
+
+// ---- sequencer -------------------------------------------------------------
+void emu_seq_row(int row, int note, int mask) {
+  if (row < 0 || row >= 16) return;
+  seqNote[row] = (uint8_t)note;
+  seqMask[row] = (uint16_t)mask;
+  if (row + 1 > seqRows) seqRows = row + 1;
+}
+
+void emu_seq_start(double bpm, int steps) {
+  if (bpm < 20.0) bpm = 20.0;
+  seqSteps = (steps > 0 && steps <= 16) ? steps : 16;
+  seqSamplesPerStep = sampleRate * 60.0 / bpm / 4.0;   // sixteenth notes
+  seqCurStep = 0;
+  seqAcc = 0.0;
+  seqRunning = true;
+}
+
+void emu_seq_tempo(double bpm) {
+  if (bpm < 20.0) bpm = 20.0;
+  seqSamplesPerStep = sampleRate * 60.0 / bpm / 4.0;
+}
+
+void emu_seq_stop() { seqRunning = false; }
+
+int emu_seq_step() { return seqRunning ? seqCurStep : -1; }
 
 // ---- MIDI in ---------------------------------------------------------------
 void emu_note_on(int channel, int note, int velocity) {

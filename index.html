@@ -718,6 +718,33 @@ if (!('serial' in navigator)){
 }
 
 
+/* ---- sequencer engine: timer driven ---- */
+// Notes reach the unit over a serial link, so there is nothing to be
+// sample-accurate against. A drift-corrected timer is the best available:
+// each tick is scheduled from when it SHOULD have fired, not from now.
+let seqRowsCache = [], seqTimer = null, seqNextAt = 0, seqPos = -1, seqBpm = 110, seqLen = 16;
+
+function seqEnginePattern(rows){ seqRowsCache = rows; }
+function seqEngineTempo(bpm){ seqBpm = bpm; }
+function seqEngineStep(){ return seqPos; }
+function seqEngineStop(){
+  if (seqTimer) clearTimeout(seqTimer);
+  seqTimer = null; seqPos = -1;
+}
+function seqEngineStart(bpm, steps){
+  seqBpm = bpm; seqLen = steps; seqPos = 0;
+  seqNextAt = performance.now();
+  const tick = () => {
+    seqRowsCache.forEach(r => {
+      if (r.mask & (1 << seqPos)) playNote(r.note, 110, 9);
+    });
+    seqPos = (seqPos + 1) % seqLen;
+    seqNextAt += 60000 / seqBpm / 4;
+    seqTimer = setTimeout(tick, Math.max(0, seqNextAt - performance.now()));
+  };
+  tick();
+}
+
 
 /* ==== Protocol (shared by both transports) ============================== */
 let sawLayout = false;
@@ -1360,7 +1387,19 @@ const SEQ_PATTERNS = {
 };
 
 let seqGrid = SEQ_ROWS.map(() => new Array(SEQ_STEPS).fill(false));
-let seqPlaying = false, seqStep = 0, seqTimer = null, seqNext = 0;
+let seqPlaying = false;
+let seqCells = [];             // cached elements: querying 128 cells per step was wasteful
+let seqLastPainted = -1;
+
+// Rows are handed to the engine as a 16-bit mask each, which is all the
+// timing side needs to know about the pattern.
+function seqRowsForEngine(){
+  return SEQ_ROWS.map((r, ri) => {
+    let mask = 0;
+    for (let s = 0; s < SEQ_STEPS; s++) if (seqGrid[ri][s]) mask |= (1 << s);
+    return { note: r.note, mask };
+  });
+}
 
 function buildSequencer(){
   const head = document.getElementById('seqHead');
@@ -1381,16 +1420,18 @@ function buildSequencer(){
     nm.className = 'seqname'; nm.textContent = r.name;
     nm.onclick = () => playNote(r.note, 110, 9);       // audition
     row.appendChild(nm);
+    seqCells[ri] = [];
     for (let si = 0; si < SEQ_STEPS; si++){
       const c = document.createElement('div');
       c.className = 'step' + (si % 4 === 0 ? ' beat' : '');
-      c.dataset.r = ri; c.dataset.s = si;
       c.addEventListener('pointerdown', e => {
         e.preventDefault();
         seqGrid[ri][si] = !seqGrid[ri][si];
         c.classList.toggle('on', seqGrid[ri][si]);
         if (seqGrid[ri][si]) playNote(r.note, 110, 9);
+        seqEnginePattern(seqRowsForEngine());
       });
+      seqCells[ri][si] = c;
       row.appendChild(c);
     }
     rows.appendChild(row);
@@ -1405,19 +1446,37 @@ function buildSequencer(){
   sel.onchange = () => loadPattern(sel.value);
 
   const tempo = document.getElementById('seqTempo');
-  tempo.oninput = () => { document.getElementById('seqBpm').textContent = tempo.value + ' BPM'; };
+  tempo.oninput = () => {
+    document.getElementById('seqBpm').textContent = tempo.value + ' BPM';
+    seqEngineTempo(parseInt(tempo.value, 10) || 110);
+  };
 
   document.getElementById('seqPlay').onclick = toggleSeq;
   document.getElementById('seqClear').onclick = () => loadPattern('Empty');
 
   loadPattern('Four/Four');
   document.getElementById('seqPreset').value = 'Four/Four';
+  requestAnimationFrame(paintPlayhead);
 }
 
 function paintSeq(){
-  document.querySelectorAll('.step').forEach(c => {
-    c.classList.toggle('on', seqGrid[c.dataset.r | 0][c.dataset.s | 0]);
-  });
+  for (let r = 0; r < seqCells.length; r++)
+    for (let s = 0; s < SEQ_STEPS; s++)
+      seqCells[r][s].classList.toggle('on', seqGrid[r][s]);
+}
+
+// The playhead is read from the engine rather than set by it, so the
+// display can lag a frame without the timing itself being affected.
+function paintPlayhead(){
+  const step = seqPlaying ? seqEngineStep() : -1;
+  if (step !== seqLastPainted){
+    if (seqLastPainted >= 0)
+      for (let r = 0; r < seqCells.length; r++) seqCells[r][seqLastPainted].classList.remove('playing');
+    if (step >= 0)
+      for (let r = 0; r < seqCells.length; r++) seqCells[r][step].classList.add('playing');
+    seqLastPainted = step;
+  }
+  requestAnimationFrame(paintPlayhead);
 }
 
 function loadPattern(name){
@@ -1429,37 +1488,21 @@ function loadPattern(name){
     return row;
   });
   paintSeq();
-}
-
-function seqTick(){
-  document.querySelectorAll('.step.playing').forEach(c => c.classList.remove('playing'));
-  SEQ_ROWS.forEach((r, ri) => {
-    if (seqGrid[ri][seqStep]) playNote(r.note, 110, 9);
-    const cell = document.querySelector('.step[data-r="' + ri + '"][data-s="' + seqStep + '"]');
-    if (cell) cell.classList.add('playing');
-  });
-  seqStep = (seqStep + 1) % SEQ_STEPS;
-
-  const bpm = parseInt(document.getElementById('seqTempo').value, 10) || 110;
-  const interval = 60000 / bpm / 4;            // sixteenth notes
-  seqNext += interval;
-  const drift = seqNext - performance.now();
-  seqTimer = setTimeout(seqTick, Math.max(0, drift));
+  seqEnginePattern(seqRowsForEngine());
 }
 
 function toggleSeq(){
   const btn = document.getElementById('seqPlay');
+  const bpm = parseInt(document.getElementById('seqTempo').value, 10) || 110;
   if (seqPlaying){
-    clearTimeout(seqTimer); seqTimer = null;
+    seqEngineStop();
     seqPlaying = false; btn.textContent = 'Play';
-    document.querySelectorAll('.step.playing').forEach(c => c.classList.remove('playing'));
   } else {
+    seqEnginePattern(seqRowsForEngine());
+    seqEngineStart(bpm, SEQ_STEPS);
     seqPlaying = true; btn.textContent = 'Stop';
-    seqStep = 0; seqNext = performance.now();
-    seqTick();
   }
 }
-
 
 /* ==== Gamepad =========================================================== */
 // Standard-mapping layout, which is what an 8BitDo reports over Bluetooth:
