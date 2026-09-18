@@ -111,7 +111,6 @@ struct ToneParams {
 // the same array the web panel edits over serial and that presets are made
 // of. Edit generate.py, re-run it, reflash; never edit parameters.h by hand.
 #include "parameters.h"
-#include "samples.h"
 #include <EEPROM.h>
 
 static uint8_t params[NUM_PARAMS];
@@ -228,12 +227,10 @@ static void writeReg(uint8_t chip, unsigned char reg, unsigned char db) {
   // Same BC1-kept-low NACT/BAR/IAB/DWS sequencing as the original, just
   // routed through direct port writes instead of digitalWrite().
   //
-  // ATOMIC: the digidrum Timer3 ISR writes registers too, over the same
-  // 8-bit data bus and the same BDIR/BC2 lines. An interrupt landing
-  // between the address latch and the data write would corrupt both
-  // transfers, so the whole sequence runs with interrupts masked. Costs the
-  // ISR at most one register write of jitter (~5us against a 125us sample
-  // period), which is inaudible on percussion.
+  // ATOMIC: an interrupt landing between the address latch and the data
+  // write would corrupt the transfer. Nothing writes registers from an ISR
+  // today, but the cost is a few cycles and it keeps the bus safe if
+  // anything ever does again.
   uint8_t sreg_save = SREG;
   cli();
   ChipCtl &c = chipCtl[chip];
@@ -390,7 +387,16 @@ public:
     ushort mask = (8+1) << sub;
     r[MIXER] |= mask;
     r[TONEAAMPL + sub] = 0;
-    if (r[ENVSHAPE] != 0) {
+
+    // The envelope generator is per-CHIP and shared by all three channels.
+    // Zeroing it unconditionally cut off any other drum still sounding on
+    // this chip, which is why drums choked each other. Only reset it once
+    // no other channel here is still driven by it (M bit, 0x10).
+    bool envInUse = false;
+    for (uint8_t s2 = 0; s2 < 3; s2++) {
+      if (s2 != sub && (r[TONEAAMPL + s2] & 0x10)) { envInUse = true; break; }
+    }
+    if (!envInUse && r[ENVSHAPE] != 0) {
       r[ENVSHAPE] = 0;
       update(chip); // Force flush
     }
@@ -628,6 +634,7 @@ public:
   
   void startFX(const struct FXParams &fxp) {
     m_fxp = fxp;
+    m_age = 0;        // percussion is age-ranked for stealing too
   
     if (m_ampl > 0) {
       psg.setPercOff(m_chan);
@@ -782,13 +789,6 @@ public:
 
 const ushort MAX_VOICES = 9;
 
-// Digidrum playback reserves the top voice: a Timer3 ISR owns that
-// channel's amplitude register, so the allocators and the 100Hz voice
-// update must both leave it alone. Declared here because startNote() and
-// startPercussion() reference it well before the digidrum engine below.
-static const uint8_t DIGI_VOICE = MAX_VOICES - 1;        // voice 8
-static const uint8_t DIGI_CHIP  = (MAX_VOICES - 1) % 3;  // chip C
-static const uint8_t DIGI_SUB   = (MAX_VOICES - 1) / 3;  // channel C
 
 static Voice voices[MAX_VOICES];
 
@@ -872,19 +872,98 @@ static uint8_t m_voiceNo[N_NOTES];
   // Which voice is playing each note
   
 
-static bool startNote(ushort idx) {
-  for (ushort i = 0; i < MAX_VOICES; i++) {
-    if (params[P_DIGI_ENABLE] && i == DIGI_VOICE) continue;
-    if (m_playing[i] == NO_NOTE) {
-      voices[i].start(MIDI_MIN + idx, m_velocity[idx], m_chan[idx]);
-      m_playing[i] = idx;
-      m_voiceNo[idx] = i;
-          //Serial.print("Voice #: ");
-          //Serial.println(i);
-      return true;
+// --- Voice allocation ----------------------------------------------------
+//
+// Two things make naive allocation audible:
+//
+// 1. Each AY has ONE envelope generator shared by its three channels, and
+//    percussion is envelope-driven. Two drums landing on the same chip fight
+//    over it and the older one gets cut. So percussion prefers a chip whose
+//    envelope nobody is using.
+// 2. Taking a voice that is mid-attack is obvious; taking one already in its
+//    release tail is nearly inaudible. So stealing is ranked, not arbitrary.
+
+static void freeVoice(uint8_t v) {
+  uint8_t idx = m_playing[v];
+  if (idx != NO_NOTE && idx != PERC_NOTE) m_voiceNo[idx] = NO_VOICE;
+  m_playing[v] = NO_NOTE;
+}
+
+// A free voice, preferring one on preferChip (-1 = no preference).
+static uint8_t findFreeVoice(int8_t preferChip) {
+  if (preferChip >= 0) {
+    for (uint8_t i = 0; i < MAX_VOICES; i++) {
+      if (m_playing[i] == NO_NOTE && (int8_t)(i % 3) == preferChip) return i;
     }
   }
-  return false;
+  for (uint8_t i = 0; i < MAX_VOICES; i++) {
+    if (m_playing[i] == NO_NOTE) return i;
+  }
+  return NO_VOICE;
+}
+
+// A chip whose envelope generator no sounding percussion voice is using.
+static int8_t freeEnvelopeChip() {
+  bool used[3] = { false, false, false };
+  for (uint8_t i = 0; i < MAX_VOICES; i++) {
+    if (m_playing[i] == PERC_NOTE && voices[i].isPlaying()) used[i % 3] = true;
+  }
+  for (uint8_t c = 0; c < 3; c++) if (!used[c]) return (int8_t)c;
+  return -1;
+}
+
+// Least disruptive voice to take, in preference order:
+//   1. one already in its release tail  (quiet -- steal is inaudible)
+//   2. the oldest percussion hit        (drums are short and nearly done)
+//   3. the oldest held note that is neither the highest nor the lowest
+//      (those two carry the melody and the bass line)
+//   4. the oldest held note of any kind
+static uint8_t pickStealVoice() {
+  uint8_t  bR = NO_VOICE, bP = NO_VOICE, bM = NO_VOICE, bA = NO_VOICE;
+  uint16_t aR = 0, aP = 0, aM = 0, aA = 0;
+
+  for (uint8_t i = 0; i < MAX_VOICES; i++) {
+    uint8_t idx = m_playing[i];
+    if (idx == NO_NOTE) return i;            // something freed up meanwhile
+    uint16_t age = voices[i].m_age;
+
+    if (voices[i].m_adsr == 'R' && age >= aR) { bR = i; aR = age; }
+
+    if (idx == PERC_NOTE) {
+      if (age >= aP) { bP = i; aP = age; }
+      continue;
+    }
+    if (idx != m_highest && idx != m_lowest && age >= aM) { bM = i; aM = age; }
+    if (age >= aA) { bA = i; aA = age; }
+  }
+
+  if (bR != NO_VOICE) return bR;
+  if (bP != NO_VOICE) return bP;
+  if (bM != NO_VOICE) return bM;
+  return bA;
+}
+
+// Frees a voice for reuse. Takes the channel down first so the new note
+// starts from silence rather than jumping from the old note's amplitude.
+static uint8_t claimVoice(int8_t preferChip) {
+  uint8_t v = findFreeVoice(preferChip);
+  if (v != NO_VOICE) return v;
+
+  v = pickStealVoice();
+  if (v == NO_VOICE) return NO_VOICE;
+  voices[v].kill();
+  freeVoice(v);
+  return v;
+}
+
+static bool startNote(ushort idx) {
+  uint8_t v = claimVoice(-1);
+  if (v == NO_VOICE) return false;
+
+  voices[v].start(MIDI_MIN + idx, m_velocity[idx], m_chan[idx]);
+  m_playing[v] = idx;
+  m_voiceNo[idx] = v;
+  return true;
 }
   
 // Applies the global Drums controls to one drum's parameters. Works on the
@@ -931,112 +1010,20 @@ static void applyDrumMods(FXParams &f) {
   }
 }
 
-// --- Digidrums -----------------------------------------------------------
-// 4-bit PCM pushed out through one channel's volume register, the Atari ST
-// trick. With tone and noise muted on that channel, its output is a DC level
-// set by the volume register, so writing sample codes at a steady rate
-// reproduces the waveform. Timer3 gives a jitter-free sample clock; Timer1
-// is already the 1MHz AY master clock and Timer0 is millis(), so Timer3 is
-// the one that's free. TCCR3A stays 0 so OC3A never drives pin 5, which is
-// one of our data bus lines.
-//
-// The top voice is reserved while this is enabled: the ISR owns that
-// channel's amplitude register, so nothing else may write it.
-
-static volatile uint16_t digiIndex = 0;   // nibble cursor into the sample
-static volatile uint16_t digiEnd   = 0;   // nibble count, 0 = idle
-static volatile uint16_t digiBase  = 0;   // byte offset of this sample
-
-static void digiTimerInit() {
-  TCCR3A = 0;                       // no output compare pins -- pin 5 is ours
-  TCCR3B = (1 << WGM32) | (1 << CS31);   // CTC, prescaler 8 -> 2MHz tick
-  TCCR3C = 0;
-  TIMSK3 = 0;                       // ISR enabled only while a sample plays
-}
-
-static void digiSetRate() {
-  // Tune scales playback rate: 2MHz / (rate) - 1, rate = base * tune / 100.
-  uint32_t rate = ((uint32_t)DIGI_BASE_RATE * params[P_DIGI_TUNE]) / 100UL;
-  if (rate < 2000UL)  rate = 2000UL;
-  if (rate > 20000UL) rate = 20000UL;
-  uint16_t ocr = (uint16_t)((2000000UL / rate) - 1);
-  OCR3A = ocr;
-}
-
-ISR(TIMER3_COMPA_vect) {
-  if (digiIndex >= digiEnd) {
-    TIMSK3 = 0;                                   // done: stop the ISR
-    writeReg(DIGI_CHIP, PSGRegs::TONEAAMPL + DIGI_SUB, 0);
-    digiEnd = 0;
-    return;
-  }
-  uint8_t b = pgm_read_byte(&sampleData[digiBase + (digiIndex >> 1)]);
-  uint8_t v = (digiIndex & 1) ? (b & 0x0F) : (b >> 4);   // high nibble first
-  writeReg(DIGI_CHIP, PSGRegs::TONEAAMPL + DIGI_SUB, v);
-  digiIndex++;
-}
-
-// Starts sample i. Deliberately ignores P_DIGI_ENABLE so the serial DIGI:n
-// command can exercise the audio path on its own, separately from the note
-// mapping and the enable toggle.
-static void digiTriggerIndex(uint8_t i) {
-  if (i >= NUM_SAMPLES) return;
-
-  uint16_t off = pgm_read_word(&sampleDefs[i].offset);
-  uint16_t cnt = pgm_read_word(&sampleDefs[i].count);
-
-  // Mute tone and noise on the reserved channel so its output is pure DC
-  // from the volume register, and make sure the envelope isn't driving it
-  // (M bit clear). Done through the cache so it survives a flush.
-  psg.regs[DIGI_CHIP][PSGRegs::MIXER] |= (1 << DIGI_SUB) | (8 << DIGI_SUB);
-  psg.regs[DIGI_CHIP][PSGRegs::TONEAAMPL + DIGI_SUB] = 0;
-  psg.update(DIGI_CHIP);
-
-  digiSetRate();
-  uint8_t sreg = SREG;
-  cli();
-  digiBase  = off;
-  digiIndex = 0;
-  digiEnd   = cnt;
-  SREG = sreg;
-  TCNT3  = 0;
-  TIMSK3 = (1 << OCIE3A);          // start playback
-}
-
-// Returns true if this note was handled as a digidrum.
-static bool digiTrigger(note_t note) {
-  if (!params[P_DIGI_ENABLE]) return false;
-
-  for (uint8_t i = 0; i < NUM_SAMPLES; i++) {
-    if (pgm_read_byte(&sampleDefs[i].note) != note) continue;
-    digiTriggerIndex(i);
-    return true;
-  }
-  return false;
-}
-
 static bool startPercussion(note_t note) {
-  if (digiTrigger(note)) return true;   // sampled version wins for this note
+  if (note < PERC_MIN || note > PERC_MAX) return false;
 
-  ushort i;
-  for (i = 0; i < MAX_VOICES; i++) {
-    if (params[P_DIGI_ENABLE] && i == DIGI_VOICE) continue;
-    //if (m_playing[i] == NO_NOTE || m_playing[i] == PERC_NOTE) {
-    if (i != NO_VOICE && m_playing[i] == NO_NOTE) {
-      if (note >= PERC_MIN && note <= PERC_MAX) {
-        FXParams fxp;
-        memcpy_P(&fxp, &perc_params[note-PERC_MIN], sizeof(FXParams));
-        applyDrumMods(fxp);
-        voices[i].startFX(fxp);
-        m_playing[i] = PERC_NOTE;
+  // Prefer a chip whose envelope generator is idle, so this hit does not cut
+  // short a drum already sounding on the same chip.
+  uint8_t v = claimVoice(freeEnvelopeChip());
+  if (v == NO_VOICE) return false;
 
-      }
-      return true;
-    }        
-//              Serial.print("m_playing: ");
-//          Serial.println(m_playing[i]);
-  }
-  return false;
+  FXParams fxp;
+  memcpy_P(&fxp, &perc_params[note - PERC_MIN], sizeof(FXParams));
+  applyDrumMods(fxp);
+  voices[v].startFX(fxp);
+  m_playing[v] = PERC_NOTE;
+  return true;
 }
     
 static bool stopNote(ushort idx) {
@@ -1048,41 +1035,6 @@ static bool stopNote(ushort idx) {
     return true;
   }
   return false;
-}
-
-static void stopOneNote() {
-  uint8_t v, chosen = NO_NOTE;
-
-  // At this point we have run out of voices.
-  // Pick a voice and stop it. We leave a voice alone
-  // if it's playing the highest requested note. If it's
-  // playing the lowest requested note we look for a 'better'
-  // note, but stop it if none found.
-
-  for (v = 0; v < MAX_VOICES; v++) {
-    uint8_t idx = m_playing[v];
-    if (idx == NO_NOTE) {// Uh? Perhaps called by mistake.
-      return;
-    }
-
-    if (idx == m_highest) {
-      continue;
-    }
-
-    if (idx == PERC_NOTE) {
-      continue;
-    }
-      
-    chosen = idx;
-    if (idx != m_lowest) {
-      break;
-    }
-    // else keep going, we may find a better one
-  }
-
-  if (chosen != NO_NOTE) {
-    stopNote(chosen);
-  }
 }
 
 static void updateRequestedNotes() {
@@ -1169,10 +1121,10 @@ static void noteOn(midictrl_t chan, note_t note, midictrl_t vel) {
   }
 
   if (chan == PERC_CHANNEL) {
-    //if (!startPercussion(note)) {
-      stopOneNote();
-      startPercussion(note);
-    //}
+    // This used to call stopOneNote() first, unconditionally, so EVERY drum
+    // hit silenced a melodic note even when voices were free. Allocation now
+    // steals only when it actually has to.
+    startPercussion(note);
     return;
   }
     
@@ -1193,10 +1145,7 @@ static void noteOn(midictrl_t chan, note_t note, midictrl_t vel) {
   m_chan[idx] = chan;
   updateRequestedNotes();
     
-  if (!startNote(idx)) {
-     stopOneNote();
-     startNote(idx);
-  }
+  startNote(idx);   // claimVoice() handles stealing internally
 }
   
   
@@ -1244,8 +1193,6 @@ static void recalcDerived() {
   // up to ~4kHz, where the effect stops being rhythmic and becomes timbre.
   warpIntervalUs = 30000UL / params[P_WARP_RATE];
   if (warpIntervalUs < 250UL) warpIntervalUs = 250UL;
-
-  digiSetRate();
 
   // Any parameter change resyncs the chips, which also cleans up whatever
   // the Warp Zone scribbled directly into the hardware.
@@ -1448,30 +1395,24 @@ static void handleCommand(char *cmd) {
     Serial.print(':');
     Serial.println(params[idx]);
   }
-  else if (strncmp(cmd, "DIGI:", 5) == 0) {
-    // Fire a sample directly by index, bypassing MIDI and the note lookup.
-    uint8_t n = (uint8_t)atoi(cmd + 5);
-    if (n < NUM_SAMPLES) {
-      digiTriggerIndex(n);
-      Serial.print(F("DIGIFIRE:"));
-      Serial.println(n);
-    }
-  }
   else if (strcmp(cmd, "DIAG") == 0) {
-    Serial.print(F("DIAG enable="));   Serial.print(params[P_DIGI_ENABLE]);
-    Serial.print(F(" tune="));         Serial.print(params[P_DIGI_TUNE]);
-    Serial.print(F(" TIMSK3="));       Serial.print(TIMSK3);
-    Serial.print(F(" OCR3A="));        Serial.print(OCR3A);
-    Serial.print(F(" idx="));          Serial.print(digiIndex);
-    Serial.print(F(" end="));          Serial.print(digiEnd);
-    Serial.print(F(" chip="));         Serial.print(DIGI_CHIP);
-    Serial.print(F(" reg="));          Serial.print(PSGRegs::TONEAAMPL + DIGI_SUB);
-    Serial.print(F(" mixC="));         Serial.print(psg.regs[DIGI_CHIP][PSGRegs::MIXER]);
-    Serial.print(F(" codes="));
-    for (uint8_t k = 0; k < 4; k++) {
-      uint8_t b = pgm_read_byte(&sampleData[k]);
-      Serial.print(b >> 4);   Serial.print(',');
-      Serial.print(b & 0x0F); Serial.print(',');
+    // Voice map: index:chip/what/stage/age-in-ticks. This is what to read
+    // when notes choke -- it shows crowding and which chip drums landed on.
+    Serial.print(F("DIAG "));
+    for (uint8_t i = 0; i < MAX_VOICES; i++) {
+      uint8_t idx = m_playing[i];
+      Serial.print(i);
+      Serial.print(F(":c"));
+      Serial.print(i % 3);
+      Serial.print('/');
+      if (idx == NO_NOTE)        Serial.print(F("free"));
+      else if (idx == PERC_NOTE) Serial.print(F("perc"));
+      else { Serial.print('n'); Serial.print(MIDI_MIN + idx); }
+      Serial.print('/');
+      Serial.print((char)voices[i].m_adsr);
+      Serial.print('/');
+      Serial.print(voices[i].m_age);
+      Serial.print(' ');
     }
     Serial.println();
   }
@@ -1489,6 +1430,13 @@ static void handleCommand(char *cmd) {
       p++;
     }
     recalcDerived();
+    if (i < NUM_PARAMS) {
+      // Short preset: say so rather than leaving the tail at old values.
+      Serial.print(F("ERR:SHORT "));
+      Serial.print(i);
+      Serial.print('/');
+      Serial.println(NUM_PARAMS);
+    }
     sendPreset();
   }
   else if (strcmp(cmd, "SAVE") == 0) {
@@ -1503,22 +1451,38 @@ static void handleCommand(char *cmd) {
   // anything else: ignore silently
 }
 
-// Big enough for "LOAD:" + NUM_PARAMS 3-digit values with commas.
-static char    cmdBuf[96];
-static uint8_t cmdLen = 0;
+// Sized FROM NUM_PARAMS so it can never fall behind the parameter set:
+// a LOAD: line is "LOAD:" + up to 3 digits and a comma per parameter.
+// This was a fixed 96 bytes, which silently truncated a 34-parameter
+// LOAD at around parameter 22 -- presets appeared to apply but everything
+// past that kept its old value, with no error anywhere.
+#define CMD_BUF_SIZE (NUM_PARAMS * 4 + 16)
+static char     cmdBuf[CMD_BUF_SIZE];
+static uint16_t cmdLen = 0;
+static bool     cmdOverflow = false;
 
 static void pollSerialControl() {
   while (Serial.available()) {
     char c = Serial.read();
     if (c == '\n' || c == '\r') {
-      if (cmdLen > 0) {
+      if (cmdOverflow) {
+        // Never act on a truncated command -- a half-parsed LOAD would
+        // apply some parameters and silently drop the rest.
+        Serial.println(F("ERR:LONG"));
+        cmdOverflow = false;
+        cmdLen = 0;
+      }
+      else if (cmdLen > 0) {
         cmdBuf[cmdLen] = '\0';
         handleCommand(cmdBuf);
         cmdLen = 0;
       }
     }
-    else if (cmdLen < sizeof(cmdBuf) - 1) {
+    else if (cmdLen < CMD_BUF_SIZE - 1) {
       cmdBuf[cmdLen++] = c;
+    }
+    else {
+      cmdOverflow = true;   // line too long: report it, don't half-apply it
     }
   }
 }
@@ -1551,9 +1515,6 @@ static void update100Hz() {
   }
 
   for (ushort i = 0; i < MAX_VOICES; i++) {
-    // Reserved digidrum channel: its amplitude register belongs to the ISR.
-    if (params[P_DIGI_ENABLE] && i == DIGI_VOICE) continue;
-
     voices[i].update100Hz();
 
     if (m_playing[i] == PERC_NOTE && ! (voices[i].isPlaying())) {
@@ -1692,7 +1653,6 @@ void setup() {
   if (!loadParamsFromEEPROM()) {
     loadDefaults();
   }
-  digiTimerInit();
   recalcDerived();
 
   // Serial (USB-CDC) is needed unconditionally for the parameter protocol,
@@ -1713,10 +1673,6 @@ void setup() {
 // All Notes Off periodically, the unit drops off the bus mid-session and
 // uploads fail. This does the musical part of a reset and leaves USB alone.
 static void softReset() {
-  TIMSK3 = 0;                       // stop any digidrum ISR first
-  digiIndex = 0;
-  digiEnd   = 0;
-
   for (ushort i = 0; i < MAX_VOICES; i++) {
     voices[i].kill();
   }
