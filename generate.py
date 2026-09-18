@@ -273,6 +273,8 @@ PRESETS = {
     "Reverse Kit": dict(drum_reverse=1, drum_decay=150, drum_bend=40),
     "Broken Machine": dict(drum_roll=44, drum_chaos=58, drum_noise=4,
                            drum_decay=55, drum_bend=170),
+    "Bad Ground": dict(warp_mode=3, warp_rate=6, warp_depth=38,
+                       warp_motion=35, noise_period=6),
     "1-Up Arp": dict(arp_mode=1, arp_rate=20, env_mode=1, env_attack=1,
                      env_decay=6, env_sustain=26, env_release=8),
     "Laser Jump": dict(sweep_amount=52, env_mode=1, env_attack=1,
