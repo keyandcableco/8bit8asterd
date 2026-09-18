@@ -29,6 +29,11 @@ jobs:
       - name: Regenerate the panels
         run: python3 generate.py
 
+      - name: Build the social preview card
+        run: |
+          pip install --quiet Pillow
+          python3 make_social.py
+
       - uses: mymindstorm/setup-emsdk@v14
         with:
           version: latest
@@ -44,6 +49,7 @@ jobs:
           mkdir -p site
           cp emulator/emulator.html site/index.html   # the emulator is the landing page
           cp emulator/8b8.js emulator/8b8.wasm site/
+          cp emulator/social.png site/
           cp index.html site/panel.html               # the Web Serial panel for real hardware
           ls -la site
 

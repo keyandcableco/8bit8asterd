@@ -292,6 +292,13 @@ PRESETS = {
 # be discovered: each band is labelled with what it touches, and the Warp
 # Zone sits across the bottom spanning both because it hits them differently.
 
+# Where the published site lives. The social preview needs ABSOLUTE urls --
+# Reddit, Discord and the rest will not resolve a relative one.
+SITE_URL = "https://keyandcableco.github.io/8bit8asterd"
+SITE_TITLE = "The 8Bit 8asterd"
+SITE_DESC = ("A 9-voice chiptune synth built on three AY-3-8910 chips. "
+             "Playable in your browser, running the same firmware as the hardware.")
+
 SECTIONS = [
     dict(key="mix", title="Master Mixer", scope="everything out",
          blurb="Output levels. Tone and noise share one amplitude register "
@@ -419,6 +426,24 @@ HTML_TEMPLATE = r"""<!doctype html>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>8B8 — AY Panel</title>
+<meta name="description" content="__SITE_DESC__">
+
+<!-- Open Graph. Reddit, Discord, iMessage and Slack all read these; without
+     them a shared link renders as a bare url with no picture. -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="The Key &amp; Cable Company">
+<meta property="og:title" content="__SITE_TITLE__">
+<meta property="og:description" content="__SITE_DESC__">
+<meta property="og:url" content="__SITE_URL__/">
+<meta property="og:image" content="__SITE_URL__/social.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The 8Bit 8asterd control panel">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="__SITE_TITLE__">
+<meta name="twitter:description" content="__SITE_DESC__">
+<meta name="twitter:image" content="__SITE_URL__/social.png">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
@@ -2158,7 +2183,10 @@ def emit_html(path, transport="serial", extra_head="", extra_body=""):
             .replace("__EXTRA_HEAD__", extra_head)
             .replace("__EXTRA_BODY__", extra_body)
             .replace("__BRAND__", brand_markup())
-            .replace("__INTRO__", SERIAL_INTRO if transport == "serial" else WASM_INTRO))
+            .replace("__INTRO__", SERIAL_INTRO if transport == "serial" else WASM_INTRO)
+            .replace("__SITE_URL__", SITE_URL)
+            .replace("__SITE_TITLE__", SITE_TITLE)
+            .replace("__SITE_DESC__", SITE_DESC))
     with open(path, "w") as f:
         f.write(html)
     print(f"wrote {path}  ({len(PRESETS)} presets)")
