@@ -190,6 +190,26 @@
   body.compact .ctl{ margin-bottom:10px; }
 
 
+  /* ---- Labelled control cells: label under the control it belongs to,
+         because a row of labels beside a row of controls is ambiguous ---- */
+  .cc-row{
+    display:flex; gap:14px; flex-wrap:wrap; align-items:flex-end;
+    padding:12px 13px;
+  }
+  .cc{ display:flex; flex-direction:column; align-items:center; gap:6px; }
+  .cc > .cc-label{
+    font-family:var(--pixel); font-size:calc(6px * var(--ui-scale));
+    color:var(--text-dim); letter-spacing:.04em; text-align:center;
+    white-space:nowrap;
+  }
+  .cc select{ padding:7px 8px; font-size:calc(11px * var(--ui-scale)); }
+  .cc .readout{
+    font-family:var(--pixel); font-size:calc(10px * var(--ui-scale));
+    color:var(--accent-lit); background:var(--slot);
+    border:2px solid var(--bezel); padding:9px 14px; min-width:88px;
+    text-align:center;
+  }
+
   /* ---- Octave steppers ---- */
   .oct{ display:flex; align-items:center; gap:0; flex:none; }
   .oct button{
@@ -544,20 +564,52 @@
     <p class="section-blurb">Seven roots around the circle of fifths, three chord types, and a strumpad whose twelve notes follow whatever chord is held. Works with a mouse, a finger, or the letter keys.</p>
     <div class="module">
       <h2>Chord Matrix</h2>
-      <div class="bar" style="margin:0 13px 10px;">
-        <span class="label">Sharp</span>
-        <div class="switch" id="sharpSw"><div class="led"></div></div>
-        <span class="label">Hold</span>
-        <div class="switch" id="latchSw"><div class="led"></div></div>
-        <span class="label">Barry</span>
-        <div class="switch" id="barrySw"><div class="led"></div></div>
-        <span class="label">Chord 8ve</span>
-        <div class="oct" id="chordOct"></div>
-        <span class="label">Strum 8ve</span>
-        <div class="oct" id="strumOct"></div>
-        <span class="spacer"></span>
-        <span class="label" id="chordName">&mdash;</span>
+      <div class="cc-row">
+        <div class="cc">
+          <div class="switch" id="sharpSw"><div class="led"></div></div>
+          <span class="cc-label">Sharp</span>
+        </div>
+        <div class="cc">
+          <div class="switch" id="latchSw"><div class="led"></div></div>
+          <span class="cc-label">Hold</span>
+        </div>
+        <div class="cc">
+          <div class="switch" id="barrySw"><div class="led"></div></div>
+          <span class="cc-label">Barry</span>
+        </div>
+        <div class="cc">
+          <div class="oct" id="chordOct"></div>
+          <span class="cc-label">Chord 8ve</span>
+        </div>
+        <div class="cc">
+          <div class="oct" id="strumOct"></div>
+          <span class="cc-label">Strum 8ve</span>
+        </div>
+        <div class="cc">
+          <select id="inversionSel">
+            <option value="0">Root</option>
+            <option value="1">1st</option>
+            <option value="2">2nd</option>
+            <option value="3">3rd</option>
+          </select>
+          <span class="cc-label">Inversion</span>
+        </div>
+        <div class="cc">
+          <select id="spacingSel">
+            <option value="0">Close</option>
+            <option value="1">Drop 2</option>
+            <option value="2">Drop 3</option>
+            <option value="3">Drop 2+4</option>
+            <option value="4">Spread</option>
+          </select>
+          <span class="cc-label">Spacing</span>
+        </div>
+        <div class="cc">
+          <span class="readout" id="chordName">&mdash;</span>
+          <span class="cc-label">Playing</span>
+        </div>
       </div>
+
       <div class="play-wrap">
         <div class="matrix">
           <div class="cols" id="colHeads"></div>
@@ -569,11 +621,15 @@
 
     <div class="module">
       <h2>Keyboard</h2>
-      <div class="bar" style="margin:0 13px 10px;">
-        <span class="label">Octave</span>
-        <div class="oct" id="kbOct"></div>
-        <span class="spacer"></span>
-        <span class="label" id="kbRange">C4 &ndash; B5</span>
+      <div class="cc-row">
+        <div class="cc">
+          <div class="oct" id="kbOct"></div>
+          <span class="cc-label">Octave</span>
+        </div>
+        <div class="cc">
+          <span class="readout" id="kbRange">C4 &ndash; B5</span>
+          <span class="cc-label">Range</span>
+        </div>
       </div>
       <div class="piano-scroll"><div class="piano" id="piano"></div></div>
       <div class="pads" id="pads"></div>
@@ -1095,6 +1151,7 @@ const STRUM_SEGMENTS = 12;
 
 let sharpOn = false, latchOn = false, barryOn = false;
 let chordOct = 0, strumOct = 0, kbOct = 0;
+let inversion = 0, spacing = 0;
 
 // A small -/+ stepper. Limits differ per control because each sits at a
 // different height in the firmware's MIDI 24..96 note table, and a setting
@@ -1143,11 +1200,43 @@ function chordSpec(){
   };
 }
 
+// Inversion decides which chord tone sits at the bottom; spacing decides how
+// far apart the voices sit. Drop voicings take the close position and drop
+// the Nth voice counted from the TOP by an octave -- drop 2 the second from
+// the top, drop 3 the third, drop 2+4 both. Spread moves the outer voices
+// apart instead, which is wider but leaves the middle clustered.
+function voiceChord(tones, base){
+  let notes = tones.map(t => base + t).sort((a, b) => a - b);
+
+  for (let i = 0; i < inversion; i++){
+    notes[0] += 12;                 // lowest voice up an octave
+    notes.sort((a, b) => a - b);
+  }
+
+  const n = notes.length;
+  const DROPS = { 1: [2], 2: [3], 3: [2, 4] };
+  if (spacing >= 1 && spacing <= 3){
+    for (const d of DROPS[spacing]){
+      const i = n - d;              // dth voice counted from the top
+      if (i >= 0) notes[i] -= 12;   // a triad has no fourth voice to drop
+    }
+  } else if (spacing === 4){
+    notes[0] -= 12;
+    notes[n - 1] += 12;
+  }
+  notes.sort((a, b) => a - b);
+
+  // Shift the whole voicing into the firmware's note table rather than
+  // clamping individual notes, which would collapse voices onto each other.
+  while (notes[notes.length - 1] > 96) notes = notes.map(x => x - 12);
+  while (notes[0] < 24) notes = notes.map(x => x + 12);
+  return notes;
+}
+
 function chordFor(){
   const spec = chordSpec();
   if (!spec) return [];
-  const base = ROOTS[activeRoot][1] + (sharpOn ? 1 : 0) + chordOct * 12;
-  return spec.tones.map(t => Math.max(24, Math.min(96, base + t)));
+  return voiceChord(spec.tones, ROOTS[activeRoot][1] + (sharpOn ? 1 : 0) + chordOct * 12);
 }
 
 // The harp: chord tones stacked upward until twelve sections are filled, so
@@ -1321,6 +1410,25 @@ function buildPlaySurface(){
   }, -1, 2);
   // The piano sits at C4 and is two octaves wide, so it can drop further
   // than it can climb before the top of the table folds keys together.
+  const invSel = document.getElementById('inversionSel');
+  const spcSel = document.getElementById('spacingSel');
+  if (invSel) invSel.onchange = () => {
+    inversion = invSel.value | 0;
+    try { localStorage.setItem('8b8.inversion', inversion); } catch(e){}
+    if (heldRows.size) refreshChord();
+  };
+  if (spcSel) spcSel.onchange = () => {
+    spacing = spcSel.value | 0;
+    try { localStorage.setItem('8b8.spacing', spacing); } catch(e){}
+    if (heldRows.size) refreshChord();
+  };
+  try {
+    const i = localStorage.getItem('8b8.inversion');
+    const sp = localStorage.getItem('8b8.spacing');
+    if (i !== null && invSel){ invSel.value = i; inversion = i | 0; }
+    if (sp !== null && spcSel){ spcSel.value = sp; spacing = sp | 0; }
+  } catch(e){}
+
   const showKb = makeOctave('kbOct', () => kbOct, v => { kbOct = v; showKbRange(); }, -3, 1);
   showKb();
   showKbRange();
