@@ -610,6 +610,8 @@ HTML_TEMPLATE = r"""<!doctype html>
     <button class="btn" id="defaultsBtn">Defaults</button>
     <button class="btn" id="exportBtn">Export</button>
     <button class="btn" id="importBtn">Import</button>
+    <button class="btn" id="digiTest">Test Drums</button>
+    <button class="btn" id="diagBtn">Diag</button>
   </div>
 
   <div class="modules" id="modules"></div>
@@ -766,6 +768,9 @@ function handleLine(line){
       box.style.display = 'block';
       log('err', 'LAYOUT MISMATCH \u2014 the flashed firmware is not this version.');
     }
+  }
+  else if (line.startsWith('DIAG') || line.startsWith('DIGIFIRE:')){
+    log('rx','\u00ab ' + line);
   }
   else if (line.startsWith('SAVED:')){
     log('rx','\u00ab ' + line);
@@ -931,6 +936,15 @@ document.getElementById('importBtn').onclick = () => {
     log('err','Import failed: ' + e.message);
   }
 };
+
+/* ==== Digidrum test + diagnostics ======================================= */
+// Fires each sample directly by index. Bypasses MIDI and the enable toggle,
+// so if these are silent the fault is in the playback path, not the mapping.
+document.getElementById('digiTest').onclick = () => {
+  log('sys', 'Firing samples 0,1,2 directly \u2014 bypasses MIDI and the enable toggle.');
+  [0,1,2].forEach((n,k) => setTimeout(() => send('DIGI:' + n), k * 700));
+};
+document.getElementById('diagBtn').onclick = () => send('DIAG');
 
 /* ==== Boot ============================================================== */
 buildUI();
