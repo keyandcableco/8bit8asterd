@@ -261,6 +261,27 @@
   }
   .seqhead div.beat{ color:var(--accent-lit); }
 
+  /* ---- Gamepad ---- */
+  .gp-grid{ display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:10px; padding:0 13px 13px; }
+  .gp-assign{ display:flex; align-items:center; gap:8px; }
+  .gp-assign span{
+    font-family:var(--pixel); font-size:calc(6px * var(--ui-scale));
+    color:var(--text-dim); flex:0 0 68px;
+  }
+  .gp-assign select{ flex:1 1 auto; min-width:0; }
+  .gp-live{
+    font-family:var(--mono); font-size:calc(11px * var(--ui-scale));
+    color:var(--text-dim); padding:0 13px 12px; line-height:1.7;
+  }
+  .gp-live b{ color:var(--accent-lit); }
+  .gp-modes{ display:flex; gap:6px; flex-wrap:wrap; padding:0 13px 10px; }
+  .gp-mode{
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    padding:10px 12px; cursor:pointer; color:var(--text-dim);
+    background:var(--slot); border:2px solid var(--bezel);
+  }
+  .gp-mode.active{ background:var(--accent); color:var(--on-accent); }
+
   /* ---- Section nav: one band at a time, nothing to scroll past ---- */
   .nav{ gap:6px; }
   .nav button{
@@ -509,6 +530,20 @@
         <div class="seqhead" id="seqHead"></div>
         <div id="seqRows"></div>
       </div>
+    </div>
+  </section>
+
+
+  <section class="section" id="gamepadSection">
+    <div class="section-head">
+      <h2>Gamepad</h2><span class="scope">bluetooth pad</span>
+    </div>
+    <p class="section-blurb">Connect a Bluetooth controller and press any button to wake it up. Three modes, cycled with Select or the buttons below. The right stick always strums whatever chord is held.</p>
+    <div class="module">
+      <h2>Controller</h2>
+      <div class="gp-modes" id="gpModes"></div>
+      <div class="gp-live" id="gpLive">No controller detected. Pair it, then press a button.</div>
+      <div class="gp-grid" id="gpAssign"></div>
     </div>
   </section>
 
@@ -1089,6 +1124,7 @@ function buildPlaySurface(){
 
   buildKeyboard();
   buildSequencer();
+  buildGamepad();
 }
 
 /* ---- Keyboard: two octaves of piano, plus drum pads ---- */
@@ -1327,6 +1363,178 @@ function toggleSeq(){
     seqTick();
   }
 }
+
+
+/* ==== Gamepad =========================================================== */
+// Standard-mapping layout, which is what an 8BitDo reports over Bluetooth:
+//   0 A  1 B  2 X  3 Y   4 L1  5 R1  6 L2  7 R2
+//   8 Select  9 Start   10 L3  11 R3
+//   12 Up  13 Down  14 Left  15 Right   16 Home
+// A pad that reports something else still works -- the live readout below
+// names whichever index you press, so any controller can be figured out.
+const GP = { A:0, B:1, X:2, Y:3, L1:4, R1:5, L2:6, R2:7,
+             SELECT:8, START:9, UP:12, DOWN:13, LEFT:14, RIGHT:15 };
+
+const GP_MODES = ['Chords', 'Drums', 'Params'];
+let gpMode = 0;
+let gpPrev = [];              // previous button states, for edge detection
+let gpRootIdx = 1;            // start on C
+let gpLastStrumSeg = -1;
+let gpParamSlots = [null, null, null, null];   // LX, LY, RX, RY
+let gpLastSent = [null, null, null, null];
+let gpConnected = false;
+
+const GP_DRUMS = [
+  [GP.A, 36, 'Kick'], [GP.B, 38, 'Snare'], [GP.X, 42, 'Hat'], [GP.Y, 46, 'OpnHat'],
+  [GP.UP, 50, 'HiTom'], [GP.DOWN, 41, 'LoTom'], [GP.LEFT, 37, 'Rim'], [GP.RIGHT, 49, 'Crash'],
+  [GP.L1, 56, 'Cowbell'], [GP.R1, 39, 'Clap']
+];
+
+function buildGamepad(){
+  const modes = document.getElementById('gpModes');
+  const assign = document.getElementById('gpAssign');
+  if (!modes || !assign) return;
+
+  GP_MODES.forEach((m, i) => {
+    const b = document.createElement('div');
+    b.className = 'gp-mode' + (i === gpMode ? ' active' : '');
+    b.textContent = m;
+    b.onclick = () => setGpMode(i);
+    modes.appendChild(b);
+  });
+
+  // Four stick axes, each assignable to any parameter.
+  [['Left X', 0], ['Left Y', 1], ['Right X', 2], ['Right Y', 3]].forEach(([label, slot]) => {
+    const row = document.createElement('div');
+    row.className = 'gp-assign';
+    const sp = document.createElement('span'); sp.textContent = label;
+    const sel = document.createElement('select');
+    const none = document.createElement('option');
+    none.value = ''; none.textContent = '(none)';
+    sel.appendChild(none);
+    PARAMS.forEach(p => {
+      const o = document.createElement('option');
+      o.value = p.index; o.textContent = p.group + ' - ' + p.label;
+      sel.appendChild(o);
+    });
+    sel.onchange = () => {
+      gpParamSlots[slot] = sel.value === '' ? null : (sel.value | 0);
+      try { localStorage.setItem('8b8.gp' + slot, sel.value); } catch(e){}
+    };
+    try {
+      const saved = localStorage.getItem('8b8.gp' + slot);
+      if (saved !== null){ sel.value = saved; sel.onchange(); }
+    } catch(e){}
+    row.appendChild(sp); row.appendChild(sel);
+    assign.appendChild(row);
+  });
+
+  requestAnimationFrame(gpPoll);
+}
+
+function setGpMode(i){
+  gpMode = (i + GP_MODES.length) % GP_MODES.length;
+  document.querySelectorAll('.gp-mode').forEach((b, n) => b.classList.toggle('active', n === gpMode));
+}
+
+function gpPoll(){
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  let pad = null;
+  for (const p of pads) if (p && p.connected) { pad = p; break; }
+
+  if (!pad){
+    if (gpConnected){
+      gpConnected = false;
+      document.getElementById('gpLive').textContent = 'Controller disconnected.';
+    }
+    gpPrev = [];
+    requestAnimationFrame(gpPoll);
+    return;
+  }
+  if (!gpConnected){
+    gpConnected = true;
+    log('sys', 'Gamepad: ' + pad.id + (pad.mapping === 'standard' ? '' : ' (non-standard mapping)'));
+  }
+
+  const btn = pad.buttons.map(b => b.pressed);
+  const hit = i => btn[i] && !gpPrev[i];        // rising edge only
+
+  // Select cycles the mode wherever you are.
+  if (hit(GP.SELECT)) setGpMode(gpMode + 1);
+
+  if (gpMode === 0) gpChords(btn, hit);
+  else if (gpMode === 1) gpDrums(hit);
+  else gpParams(pad);
+
+  gpStrum(pad);                                  // right stick strums in every mode
+  if (gpMode !== 2) gpParamsFromSticks(pad, true);
+
+  const down = btn.map((v, i) => v ? i : -1).filter(i => i >= 0);
+  document.getElementById('gpLive').innerHTML =
+    '<b>' + GP_MODES[gpMode] + '</b> &nbsp; ' + pad.id.slice(0, 40) +
+    '<br>buttons down: ' + (down.length ? down.join(', ') : 'none') +
+    '<br>sticks: ' + pad.axes.slice(0, 4).map(a => a.toFixed(2)).join('  ');
+
+  gpPrev = btn;
+  requestAnimationFrame(gpPoll);
+}
+
+function gpChords(btn, hit){
+  // Shoulders and left/right walk the seven roots; face buttons pick quality.
+  if (hit(GP.LEFT)  || hit(GP.L1)) gpRootIdx = (gpRootIdx + ROOTS.length - 1) % ROOTS.length;
+  if (hit(GP.RIGHT) || hit(GP.R1)) gpRootIdx = (gpRootIdx + 1) % ROOTS.length;
+  if (hit(GP.Y)){
+    sharpOn = !sharpOn;
+    const sw = document.getElementById('sharpSw');
+    if (sw) sw.classList.toggle('active', sharpOn);
+  }
+  if (hit(GP.A)) pressChord(gpRootIdx, 0);
+  if (hit(GP.B)) pressChord(gpRootIdx, 1);
+  if (hit(GP.X)) pressChord(gpRootIdx, 2);
+  if (hit(GP.START)){ releaseChord(); heldChord = null; paintChords(); }
+}
+
+function gpDrums(hit){
+  GP_DRUMS.forEach(([b, note]) => { if (hit(b)) playNote(note, 110, 9); });
+}
+
+// Right stick vertical walks the strum ladder, so a flick sweeps the chord.
+function gpStrum(pad){
+  const y = pad.axes[3] || 0;
+  if (Math.abs(y) < 0.12){ gpLastStrumSeg = -1; return; }
+  if (!strumNotes.length) return;
+  const seg = Math.max(0, Math.min(STRUM_SEGMENTS - 1,
+    Math.floor((1 - (y + 1) / 2) * STRUM_SEGMENTS)));
+  if (seg === gpLastStrumSeg) return;
+  gpLastStrumSeg = seg;
+  const n = strumNotes[seg];
+  playNote(n, 100, 0);
+  setTimeout(() => stopNote(n, 0), 400);
+}
+
+function gpParams(pad){ gpParamsFromSticks(pad, false); }
+
+// Sticks drive assigned parameters. Only sent when the mapped value actually
+// changes, so a resting stick is silent rather than flooding the link.
+function gpParamsFromSticks(pad, skipRightY){
+  for (let slot = 0; slot < 4; slot++){
+    const idx = gpParamSlots[slot];
+    if (idx === null) continue;
+    if (skipRightY && slot === 3) continue;      // right Y is strumming
+    const raw = pad.axes[slot] || 0;
+    if (Math.abs(raw) < 0.12) continue;          // deadzone: leave it alone
+    const p = PARAMS[idx];
+    const t = (slot % 2 === 1) ? (1 - (raw + 1) / 2) : ((raw + 1) / 2);  // Y up = more
+    const v = Math.round(p.min + t * (p.max - p.min));
+    if (v === gpLastSent[slot]) continue;
+    gpLastSent[slot] = v;
+    setValue(idx, v, false);
+  }
+}
+
+window.addEventListener('gamepadconnected', e => {
+  log('sys', 'Gamepad connected: ' + e.gamepad.id);
+});
 
 /* ==== Section nav ======================================================= */
 function buildNav(){
