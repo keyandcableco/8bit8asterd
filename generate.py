@@ -497,8 +497,13 @@ HTML_TEMPLATE = r"""<!doctype html>
     gap:16px; flex-wrap:wrap; padding:16px 18px 18px;
   }
   .brand .eyebrow{
+    display:flex; align-items:center; gap:9px;
     font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
     letter-spacing:.12em; color:var(--text-dim); margin-bottom:9px;
+  }
+  .brand .eyebrow img{
+    height:calc(20px * var(--ui-scale)); width:auto; display:block;
+    image-rendering:auto;
   }
   .brand h1{
     font-family:var(--pixel); font-size:calc(19px * var(--ui-scale));
@@ -832,7 +837,7 @@ __EXTRA_HEAD__
     <div class="stripe"><i></i><i></i><i></i><i></i><i></i></div>
     <div class="head-inner">
       <div class="brand">
-        <div class="eyebrow">Semiotic Sounds</div>
+        <div class="eyebrow">__BRAND__</div>
         <h1>8-BIT<br>8ASTERD <span>&#9632;</span></h1>
         <p>Three AY-3-8910s under live control. Generated from generate.py &mdash; __NUM_PARAMS__ parameters over USB serial. SAVE writes them to the unit.</p>
       </div>
@@ -2075,6 +2080,29 @@ EMU_EXTRA_HEAD = '<script>var Module = { onRuntimeInitialized: function(){ if (w
 
 EMU_EXTRA_BODY = ''   # the Play section is shared now; nothing emulator-only here
 
+def brand_markup():
+    """The header brand line, with the logo inlined if one is present.
+
+    A logo file next to generate.py (logo.svg, logo.png or logo.webp) is
+    base64-inlined rather than linked, so both panels stay single
+    self-contained files that work from file:// with nothing alongside them.
+    With no logo file the text stands on its own.
+    """
+    import base64, os
+    here = os.path.dirname(os.path.abspath(__file__))
+    for fname, mime in (("logo.svg", "image/svg+xml"),
+                        ("logo.png", "image/png"),
+                        ("logo.webp", "image/webp")):
+        f = os.path.join(here, fname)
+        if os.path.exists(f):
+            with open(f, "rb") as fh:
+                b64 = base64.b64encode(fh.read()).decode("ascii")
+            print(f"  logo: inlined {fname} ({len(b64)//1024}KB base64)")
+            return (f'<img src="data:{mime};base64,{b64}" alt="The Key &amp; Cable Co.">'
+                    '<span>The Key &amp; Cable Co.</span>')
+    return '<span>The Key &amp; Cable Co.</span>'
+
+
 def emit_html(path, transport="serial", extra_head="", extra_body=""):
     presets_arrays = {name: preset_array(v) for name, v in PRESETS.items()}
     tjs = SERIAL_TRANSPORT_JS if transport == "serial" else WASM_TRANSPORT_JS
@@ -2088,7 +2116,8 @@ def emit_html(path, transport="serial", extra_head="", extra_body=""):
             .replace("__TRANSPORT_JS__", tjs)
             .replace("__TRANSPORT_UI__", tui)
             .replace("__EXTRA_HEAD__", extra_head)
-            .replace("__EXTRA_BODY__", extra_body))
+            .replace("__EXTRA_BODY__", extra_body)
+            .replace("__BRAND__", brand_markup()))
     with open(path, "w") as f:
         f.write(html)
     print(f"wrote {path}  ({len(PRESETS)} presets)")
