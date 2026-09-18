@@ -575,6 +575,9 @@ HTML_TEMPLATE = r"""<!doctype html>
   }
   .bar .spacer{ flex:1 1 auto; }
   .bar.settings{ border-top-width:0; }
+  /* .bar sets display:flex, and a class rule beats the browser's default
+     [hidden]{display:none} -- so the panel needs this or it never hides. */
+  .bar[hidden]{ display:none; }
 
   /* Compact: drop the explanatory text once you know what things do. */
   body.compact .ctl .help{ display:none; }
