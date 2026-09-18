@@ -396,14 +396,26 @@ public:
   // scales the channel's tone divisor to get the envelope-period divisor;
   // there's no clean closed-form for "in tune", so this is meant to be
   // tuned by ear via the ratio control rather than computed exactly.
-  void applyBuzz(uint8_t chip, uint8_t sub, ushort toneDivisor, uint8_t ratio, uint8_t shape) {
+  void applyBuzz(uint8_t chip, uint8_t sub, ushort toneDivisor, uint8_t ratio,
+                 uint8_t shape, int8_t detune) {
     unsigned char *r = regs[chip];
-    uint16_t envDivisor = (uint16_t)toneDivisor * ratio;
+    int32_t envDivisor = (int32_t)toneDivisor * ratio + detune;
     if (envDivisor < 1) envDivisor = 1;
+    if (envDivisor > 65535) envDivisor = 65535;
     r[ENVLOW]  = envDivisor & 0xFF;
     r[ENVHIGH] = envDivisor >> 8;
     r[ENVSHAPE] = shape;
     r[TONEAAMPL + sub] = 0x10; // M=1: volume follows the envelope generator
+  }
+
+  // Forces the next update() to rewrite every register. Needed after the
+  // Warp Zone writes straight to the chip behind the cache's back: without
+  // this the cache still believes the hardware matches regs[] and would
+  // never correct the glitched values.
+  void invalidate() {
+    for (uint8_t c = 0; c < 3; c++) {
+      for (uint8_t i = 0; i < 16; i++) lastregs[c][i] = ~regs[c][i];
+    }
   }
 
   void clearBuzz(uint8_t chip, uint8_t sub) {
@@ -516,7 +528,8 @@ public:
   ushort m_chan;  // Index to psg channel 
   ushort m_pitch;   // current (glide-slewed) tone divisor
   ushort m_target;  // divisor of the note actually requested
-  uint16_t m_age;   // ticks since note start (for delayed vibrato onset)
+  uint8_t m_noteIdx; // index into note_table, for semitone-based arpeggio
+  uint16_t m_age;   // ticks since note start (delayed vibrato, sweep, retrig)
   int m_attack, m_ampl, m_ampl_top, m_decay, m_sustain, m_release, m_shape;
   static const int AMPL_MAX = 1023;
   ushort m_adsr;
@@ -526,6 +539,7 @@ public:
     m_chan = chan;
     m_ampl = m_sustain = 0;
     m_target = 0;
+    m_noteIdx = 0;
     m_age = 0;
     kill();
   }
@@ -551,6 +565,7 @@ public:
     int n = (int)note - MIDI_MIN + (int)params[P_TRANSPOSE] - 24;
     if (n < 0) n = 0;
     if (n >= (int)N_NOTES) n = (int)N_NOTES - 1;
+    m_noteIdx = (uint8_t)n;
     m_target = pgm_read_word(&note_table[n]);
 
     // Glide: start from wherever the previous note's pitch was and slew
@@ -1106,13 +1121,24 @@ static const int8_t lfoSine[32] PROGMEM = {
  -127,-125,-117,-106, -90, -71, -49, -25
 };
 
-static void recalcLfoSteps() {
+static uint32_t warpIntervalUs = 1000;
+
+static void recalcDerived() {
   // Tick rate is ~100Hz: phase steps (256 per cycle) needed per tick
   // = rateHz * 256 / 100 = rateX10 * 256 / 1000.
   vibPhaseStep = (uint16_t)(((uint32_t)params[P_VIB_RATE] * 256UL) / 1000UL);
   if (vibPhaseStep == 0) vibPhaseStep = 1;
   tremPhaseStep = (uint16_t)(((uint32_t)params[P_TREM_RATE] * 256UL) / 1000UL);
   if (tremPhaseStep == 0) tremPhaseStep = 1;
+
+  // Warp rate 1..120 maps to a 30ms..250us tick, i.e. ~33Hz slow chopping
+  // up to ~4kHz, where the effect stops being rhythmic and becomes timbre.
+  warpIntervalUs = 30000UL / params[P_WARP_RATE];
+  if (warpIntervalUs < 250UL) warpIntervalUs = 250UL;
+
+  // Any parameter change resyncs the chips, which also cleans up whatever
+  // the Warp Zone scribbled directly into the hardware.
+  psg.invalidate();
 }
 
 // Tracks which chip/sub-channel currently has the envelope-mode bit set,
@@ -1142,11 +1168,151 @@ static void applyBuzzyBass() {
   if (newChip >= 0) {
     psg.applyBuzz(newChip, newSub, voices[targetVoice].m_pitch,
                   params[P_BUZZ_RATIO],
-                  pgm_read_byte(&buzzShapes[params[P_BUZZ_SHAPE] & 3]));
+                  pgm_read_byte(&buzzShapes[params[P_BUZZ_SHAPE] & 3]),
+                  (int8_t)((int)params[P_BUZZ_DETUNE] - 32));
   }
 
   g_buzzChip = newChip;
   g_buzzSub  = newSub;
+}
+
+// --- Warp Zone: digitally controlled circuit bending ---------------------
+//
+// A hardware bend works by forcing the chip into states the data sheet does
+// not cover, while it is mid-note. These modes do the same thing in
+// software: they write STRAIGHT to the chips with writeReg(), bypassing the
+// register cache, while the normal 100Hz voice updates keep writing the
+// "correct" values through the cache. The two fight, and that fight is the
+// sound. recalcDerived() calls psg.invalidate(), so changing any parameter
+// (including turning Warp back Off) forces a clean resync.
+//
+// HARDWARE SAFETY: registers 14 and 15 are the parallel I/O port data
+// registers, and mixer bits 6-7 set those ports' direction. psg.init()
+// leaves both ports configured as OUTPUTS, so anything that grounds an I/O
+// pin while the chip drives it high is a short through the output driver.
+// Nothing below ever touches R14/R15 or mixer bits 6-7.
+
+// Arpeggio chord shapes, semitone offsets, 3 steps each. Indexed by
+// P_ARP_MODE - 1 (mode 0 is Off). Cycling these fast enough is what makes a
+// single AY channel read as a chord.
+static const int8_t arpTable[6][3] PROGMEM = {
+  {  0,  4,  7 },  // Maj
+  {  0,  3,  7 },  // Min
+  {  0, 12,  0 },  // Oct
+  {  0,  7, 12 },  // 5th
+  {  0,  3,  6 },  // Dim
+  {  0,  7, 16 }   // Wide
+};
+
+static uint8_t arpStep = 0;
+static uint8_t arpTickCount = 0;
+
+static uint16_t warpRngState = 0xACE1;
+
+static uint8_t warpRand() {
+  warpRngState ^= warpRngState << 7;
+  warpRngState ^= warpRngState >> 9;
+  warpRngState ^= warpRngState << 8;
+  return (uint8_t)warpRngState;
+}
+
+// Registers the Scramble mode is allowed to hit: tone periods, noise
+// period, amplitudes and the envelope. Never R14/R15.
+static const uint8_t warpVictims[] PROGMEM = {
+  PSGRegs::TONEAHIGH, PSGRegs::TONEBHIGH, PSGRegs::TONECHIGH,
+  PSGRegs::TONEALOW,  PSGRegs::TONEBLOW,  PSGRegs::TONECLOW,
+  PSGRegs::NOISEGEN,  PSGRegs::TONEAAMPL, PSGRegs::TONEBAMPL,
+  PSGRegs::TONECAMPL, PSGRegs::ENVLOW,    PSGRegs::ENVHIGH,
+  PSGRegs::ENVSHAPE
+};
+static const uint8_t N_WARP_VICTIMS = sizeof(warpVictims);
+
+static uint8_t warpPhase = 0;
+
+static void warpTick() {
+  uint8_t mode = params[P_WARP_MODE];
+  if (mode == 0) return;
+
+  uint8_t depth = params[P_WARP_DEPTH];
+  warpPhase++;
+
+  switch (mode) {
+
+    case 1: { // Sync Buzz -- rewriting R13 restarts the envelope from the
+              // top. Done at audio rate against a sounding note this is the
+              // Atari "sync buzzer": hard-sync style harmonics.
+              //
+              // Restarting the envelope is only audible on a channel whose
+              // volume actually follows the envelope, so force the M bit
+              // (0x10) onto any channel that is currently sounding. Without
+              // this the mode does nothing unless Buzzy Bass is already on.
+      for (uint8_t c = 0; c < 3; c++) {
+        for (uint8_t sub = 0; sub < 3; sub++) {
+          uint8_t a = psg.regs[c][PSGRegs::TONEAAMPL + sub];
+          if (a != 0) writeReg(c, PSGRegs::TONEAAMPL + sub, a | 0x10);
+        }
+        writeReg(c, PSGRegs::ENVSHAPE, psg.regs[c][PSGRegs::ENVSHAPE]);
+      }
+      break;
+    }
+
+    case 2: { // Stutter -- gate tone/noise on and off at the mixer. Bits
+              // 6-7 (I/O direction) are carried through untouched.
+      for (uint8_t c = 0; c < 3; c++) {
+        uint8_t m = psg.regs[c][PSGRegs::MIXER];
+        uint8_t patt = (warpPhase & 1) ? (depth & 0x3F) : 0;
+        writeReg(c, PSGRegs::MIXER, ((m ^ patt) & 0x3F) | (m & 0xC0));
+      }
+      break;
+    }
+
+    case 3: { // Scramble -- the closest thing to a physical bend: junk into
+              // a random audio register on a random chip.
+      uint8_t hits = 1 + (depth >> 4); // 1..4 registers per tick
+      for (uint8_t n = 0; n < hits; n++) {
+        uint8_t c   = warpRand() % 3;
+        uint8_t reg = pgm_read_byte(&warpVictims[warpRand() % N_WARP_VICTIMS]);
+        uint8_t val = warpRand();
+        if (reg == PSGRegs::MIXER) {  // never reachable today, but stays
+          val = (val & 0x3F) | (psg.regs[c][PSGRegs::MIXER] & 0xC0);
+        }
+        if (reg == PSGRegs::TONEAAMPL || reg == PSGRegs::TONEBAMPL ||
+            reg == PSGRegs::TONECAMPL) {
+          val &= 0x1F;               // keep amplitude in range, allow M bit
+        }
+        writeReg(c, reg, val);
+      }
+      break;
+    }
+
+    case 4: { // Zap -- rip the noise period up and down. Classic arcade
+              // laser/explosion sweep.
+              //
+              // Sweeping the noise period is silent unless noise is routed
+              // to a channel, so clear the mixer's noise-disable bits (3-5,
+              // active low) as well. Tone bits 0-2 and the I/O direction
+              // bits 6-7 are carried through untouched.
+      uint8_t v = warpPhase & 0x1F;
+      if (v > 15) v = 31 - v;            // triangle 0..15..0
+      v = (uint8_t)(((uint16_t)v * depth) / 63);
+      for (uint8_t c = 0; c < 3; c++) {
+        writeReg(c, PSGRegs::MIXER, psg.regs[c][PSGRegs::MIXER] & 0xC7);
+        writeReg(c, PSGRegs::NOISEGEN, v);
+      }
+      break;
+    }
+  }
+}
+
+// Identifies which generated parameter layout this firmware was built
+// against. The panel compares it to its own and complains loudly on a
+// mismatch -- otherwise a stale flash just misroutes every P:<idx> write to
+// whatever parameter used to live at that index, with no error anywhere.
+static void sendLayout() {
+  Serial.print(F("LAYOUT:"));
+  Serial.print(PARAM_LAYOUT_VERSION, HEX);
+  Serial.print(',');
+  Serial.println(NUM_PARAMS);
 }
 
 static void sendPreset() {
@@ -1165,13 +1331,14 @@ static void handleCommand(char *cmd) {
     uint8_t idx = (uint8_t)atoi(cmd + 2);
     if (idx >= NUM_PARAMS) return;
     setParam(idx, atoi(sep + 1));
-    recalcLfoSteps();
+    recalcDerived();
     Serial.print(F("V:"));
     Serial.print(idx);
     Serial.print(':');
     Serial.println(params[idx]);
   }
   else if (strcmp(cmd, "DUMP") == 0) {
+    sendLayout();
     sendPreset();
   }
   else if (strncmp(cmd, "LOAD:", 5) == 0) {
@@ -1183,7 +1350,7 @@ static void handleCommand(char *cmd) {
       if (!p) break;
       p++;
     }
-    recalcLfoSteps();
+    recalcDerived();
     sendPreset();
   }
   else if (strcmp(cmd, "SAVE") == 0) {
@@ -1192,7 +1359,7 @@ static void handleCommand(char *cmd) {
   }
   else if (strcmp(cmd, "DEFAULTS") == 0) {
     loadDefaults();
-    recalcLfoSteps();
+    recalcDerived();
     sendPreset();
   }
   // anything else: ignore silently
@@ -1232,6 +1399,19 @@ static void update100Hz() {
     tremCut = (uint8_t)(((s + 127) * params[P_TREM_DEPTH]) >> 8); // 0..depth
   }
 
+  // Arpeggio steps on a divided-down count of this 100Hz tick.
+  if (params[P_ARP_MODE] > 0) {
+    uint8_t ticksPerStep = 100 / params[P_ARP_RATE];
+    if (ticksPerStep == 0) ticksPerStep = 1;
+    if (++arpTickCount >= ticksPerStep) {
+      arpTickCount = 0;
+      if (++arpStep > 2) arpStep = 0;
+    }
+  } else {
+    arpStep = 0;
+    arpTickCount = 0;
+  }
+
   for (ushort i = 0; i < MAX_VOICES; i++) {
     voices[i].update100Hz();
 
@@ -1246,7 +1426,39 @@ static void update100Hz() {
     // before the hardware flush, and setTone() is idempotent on the mixer
     // bits, so this layering is safe.
     if (m_playing[i] != PERC_NOTE && voices[i].isPlaying()) {
+
+      // Retrigger: re-strike the envelope while the note is still held.
+      if (params[P_RETRIG_RATE] > 0 && voices[i].m_age > 0) {
+        uint8_t every = 100 / params[P_RETRIG_RATE];
+        if (every == 0) every = 1;
+        if (voices[i].m_age % every == 0) {
+          voices[i].m_ampl = voices[i].m_vel;
+          voices[i].m_adsr = 'D';
+        }
+      }
+
       ushort p = voices[i].m_pitch;
+
+      // Arpeggio: re-pitch the voice by whole semitones from the note
+      // table. This replaces the glide-slewed pitch rather than nudging it,
+      // so arpeggio and glide don't fight over the same divisor.
+      if (params[P_ARP_MODE] > 0) {
+        int8_t off = (int8_t)pgm_read_byte(&arpTable[params[P_ARP_MODE] - 1][arpStep]);
+        int idx = (int)voices[i].m_noteIdx + off;
+        if (idx < 0) idx = 0;
+        if (idx >= (int)N_NOTES) idx = (int)N_NOTES - 1;
+        p = pgm_read_word(&note_table[idx]);
+      }
+
+      // Auto sweep: NES-style automatic pitch slide, accumulating with note
+      // age. Positive raises pitch, which means SHRINKING the divisor.
+      int8_t sweep = (int8_t)((int)params[P_SWEEP_AMOUNT] - 32);
+      if (sweep != 0) {
+        int32_t sp = (int32_t)p - (((int32_t)sweep * voices[i].m_age) >> 3);
+        if (sp < 1) sp = 1;
+        if (sp > 4095) sp = 4095;
+        p = (ushort)sp;
+      }
 
       // Vibrato with delayed onset: waits P_VIB_DELAY ticks (10ms each)
       // after note start, then fades the depth in over ~250ms.
@@ -1285,6 +1497,7 @@ static void update100Hz() {
 // Main code ----------------------------------------------
 
 static unsigned long lastUpdate = 0;
+static unsigned long lastWarpUs = 0;
 
 void setup() {
   // Hold in reset while we set up the reset
@@ -1338,11 +1551,12 @@ void setup() {
   if (!loadParamsFromEEPROM()) {
     loadDefaults();
   }
-  recalcLfoSteps();
+  recalcDerived();
 
   // Serial (USB-CDC) is needed unconditionally for the parameter protocol,
   // not just for #ifdef DEBUG logging.
   Serial.begin(115200);
+  sendLayout();
   sendPreset(); // let an already-connected panel resync after a board reset
 
 #ifdef SERIALMIDI
@@ -1435,7 +1649,18 @@ void loop() {
                        // envelope/perc update rate to drift ~2x fast
                        // whenever the loop fell behind and had to catch up
   }
-  
+
+  // Warp Zone runs far faster than the 100Hz voice tick -- up to ~4kHz --
+  // so it gets its own micros() timer. Unsigned subtraction handles the
+  // ~70 minute micros() rollover correctly.
+  if (params[P_WARP_MODE] != 0) {
+    unsigned long nowUs = micros();
+    if ((unsigned long)(nowUs - lastWarpUs) >= warpIntervalUs) {
+      lastWarpUs = nowUs;
+      warpTick();
+    }
+  }
+
   psg.updateAll();
 
 }

@@ -126,6 +126,26 @@ PARAMS = [
          min=0, max=14, default=7, offset=-7,
          help="Noise colour. Negative = brighter/hissier, positive = darker."),
 
+    # --- Auto FX (NES tracker style, automatic per note) -------------------
+    # The 2A03's sweep unit did pitch slides in hardware; its chord and
+    # retrigger sounds came from the tracker re-writing registers every
+    # frame. Both are software here, applied automatically on every note.
+    dict(key="arp_mode", label="Arp", group="Auto FX", kind="enum",
+         options=["Off", "Maj", "Min", "Oct", "5th", "Dim", "Wide"],
+         default=0,
+         help="Cycles one voice through a chord fast enough to hear it as a "
+              "chord. The classic chiptune fake-polyphony trick."),
+    dict(key="arp_rate", label="Arp Rate", group="Auto FX", kind="int",
+         min=1, max=50, default=17, unit="Hz",
+         help="Steps per second. Around 15-25 is the classic NES rattle."),
+    dict(key="sweep_amount", label="Sweep", group="Auto FX", kind="int",
+         min=0, max=64, default=32, offset=-32,
+         help="Automatic pitch slide on every note, like the NES sweep "
+              "unit. Negative falls, positive rises, 0 is off."),
+    dict(key="retrig_rate", label="Retrigger", group="Auto FX", kind="int",
+         min=0, max=50, default=0, unit="Hz",
+         help="Re-strikes the envelope while a note is held. 0 = off."),
+
     # --- Envelope ----------------------------------------------------------
     dict(key="env_mode", label="Mode", group="Envelope", kind="enum",
          options=["MIDI ch presets", "Custom ADSR"], default=0,
@@ -180,6 +200,13 @@ PRESETS = {
                         buzz_enable=1, buzz_ratio=3, buzz_detune=36),
     "Broken Cabinet": dict(warp_mode=3, warp_rate=22, warp_depth=55,
                            noise_enable=1, noise_period=6),
+    "1-Up Arp": dict(arp_mode=1, arp_rate=20, env_mode=1, env_attack=1,
+                     env_decay=6, env_sustain=26, env_release=8),
+    "Laser Jump": dict(sweep_amount=52, env_mode=1, env_attack=1,
+                       env_decay=10, env_sustain=6, env_release=4),
+    "Machine Gun": dict(retrig_rate=18, noise_enable=1, noise_period=4,
+                        env_mode=1, env_attack=1, env_decay=14,
+                        env_sustain=10, env_release=6),
 }
 
 # ---------------------------------------------------------------------------
@@ -278,176 +305,288 @@ HTML_TEMPLATE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>8B8 — AY Panel</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
+  /* ---- NES front-loader palette -------------------------------------
+     The console body was two greys over a near-black slot, with the red
+     stripe as the only colour. Everything here is drawn from that: hard
+     edges, chunky plastic bevels, red used sparingly so it still reads
+     as an accent and not decoration. ------------------------------- */
   :root{
-    --bg:#12151a; --panel:#1b2027; --panel-2:#20262f; --groove:#0d0f13;
-    --line:#2c333d; --text:#e9e7df; --text-dim:#8b93a1;
-    --amber:#ffb454; --amber-dim:#6b5430;
-    --green:#6fcf97; --green-dim:#2f4538;
-    --red:#ff6b6b; --red-dim:#5a2f2f;
-    --display:'Space Grotesk',sans-serif;
-    --mono:'JetBrains Mono',ui-monospace,monospace;
+    --slot:      #0b0b0c;   /* the cartridge slot: near black        */
+    --body-dark: #2e2f31;   /* lower console body grey               */
+    --body:      #3c3d40;   /* main body grey                        */
+    --body-lit:  #5a5c60;   /* top bevel highlight                   */
+    --bezel:     #17181a;
+    --red:       #c8322b;   /* the stripe                            */
+    --red-lit:   #e8483f;
+    --red-dim:   #6d1f1b;
+    --text:      #dedbd2;   /* light grey plastic                    */
+    --text-dim:  #8c8d90;
+    --green:     #7bbf5a;   /* power LED                             */
+    --pixel:     'Press Start 2P', monospace;
+    --mono:      'JetBrains Mono', ui-monospace, monospace;
   }
-  *{box-sizing:border-box}
-  html,body{margin:0;padding:0}
+
+  *{ box-sizing:border-box; }
+  html,body{ margin:0; padding:0; }
   body{
-    background:radial-gradient(ellipse at 20% -10%, #1d232c 0%, var(--bg) 55%);
-    color:var(--text); font-family:var(--mono); min-height:100vh;
-    padding:28px 16px 60px; display:flex; justify-content:center;
+    background:
+      repeating-linear-gradient(0deg,
+        rgba(255,255,255,.012) 0 2px, transparent 2px 4px),
+      var(--slot);
+    color:var(--text);
+    font-family:var(--mono);
+    min-height:100vh;
+    padding:26px 14px 56px;
+    display:flex;
+    justify-content:center;
   }
-  .rack{width:100%;max-width:980px}
+  .rack{ width:100%; max-width:1000px; }
 
+  /* Hard plastic bevel: light on top, dark underneath. No radius --
+     the NES had almost none. */
+  .bevel{
+    border:2px solid var(--bezel);
+    box-shadow:
+      inset 0 2px 0 var(--body-lit),
+      inset 0 -2px 0 rgba(0,0,0,.55);
+  }
+
+  /* ---- Header: the console face ---- */
   header{
+    background:linear-gradient(180deg, var(--body) 0%, var(--body-dark) 100%);
+    border:2px solid var(--bezel);
+    box-shadow:
+      inset 0 2px 0 var(--body-lit),
+      inset 0 -2px 0 rgba(0,0,0,.55);
+    padding:0;
+    margin-bottom:16px;
+    overflow:hidden;
+  }
+  /* the stripe */
+  .stripe{ display:flex; height:9px; }
+  .stripe i{ flex:1; }
+  .stripe i:nth-child(1){ background:var(--red); }
+  .stripe i:nth-child(2){ background:var(--body-dark); flex:0 0 26px; }
+  .stripe i:nth-child(3){ background:var(--red); }
+  .stripe i:nth-child(4){ background:var(--body-dark); flex:0 0 26px; }
+  .stripe i:nth-child(5){ background:var(--red); }
+
+  .head-inner{
     display:flex; align-items:flex-end; justify-content:space-between;
-    gap:16px; flex-wrap:wrap; padding-bottom:18px;
-    border-bottom:1px solid var(--line); margin-bottom:18px;
+    gap:16px; flex-wrap:wrap; padding:16px 18px 18px;
   }
-  .brand .eyebrow{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--text-dim)}
-  .brand h1{font-family:var(--display);font-weight:700;font-size:28px;margin:2px 0 0;letter-spacing:.01em}
-  .brand h1 span{color:var(--amber)}
-  .brand p{margin:4px 0 0;color:var(--text-dim);font-size:12.5px;max-width:52ch}
+  .brand .eyebrow{
+    font-family:var(--pixel); font-size:7px; letter-spacing:.12em;
+    color:var(--text-dim); margin-bottom:9px;
+  }
+  .brand h1{
+    font-family:var(--pixel); font-size:19px; margin:0; line-height:1.35;
+    color:var(--text); text-shadow:2px 2px 0 rgba(0,0,0,.65);
+  }
+  .brand h1 span{ color:var(--red-lit); }
+  .brand p{ margin:10px 0 0; color:var(--text-dim); font-size:12px; max-width:50ch; line-height:1.55; }
 
-  .connection{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .connection{ display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
   .status-pill{
-    display:flex;align-items:center;gap:7px;font-size:11.5px;
-    letter-spacing:.06em;text-transform:uppercase;padding:7px 12px;
-    border-radius:20px;border:1px solid var(--line);background:var(--panel);
-    color:var(--text-dim);
+    display:flex; align-items:center; gap:7px;
+    font-family:var(--pixel); font-size:7px; letter-spacing:.06em;
+    padding:9px 11px; background:var(--slot);
+    border:2px solid var(--bezel); color:var(--text-dim);
   }
-  .status-pill .dot{width:8px;height:8px;border-radius:50%;background:var(--text-dim);transition:all .2s}
-  .status-pill.on{color:var(--green);border-color:var(--green-dim)}
-  .status-pill.on .dot{background:var(--green);box-shadow:0 0 8px 1px var(--green)}
-  .status-pill.err{color:var(--red);border-color:var(--red-dim)}
-  .status-pill.err .dot{background:var(--red);box-shadow:0 0 8px 1px var(--red)}
+  .status-pill .dot{ width:7px; height:7px; background:#4a4b4d; }
+  .status-pill.on{ color:var(--green); }
+  .status-pill.on .dot{ background:var(--green); box-shadow:0 0 7px var(--green); }
+  .status-pill.err{ color:var(--red-lit); }
+  .status-pill.err .dot{ background:var(--red-lit); box-shadow:0 0 7px var(--red); }
 
+  /* ---- Buttons: console plastic ---- */
   button.btn{
-    font-family:var(--mono);font-size:12px;letter-spacing:.04em;
-    text-transform:uppercase;font-weight:600;border:1px solid var(--line);
-    background:var(--panel-2);color:var(--text);padding:8px 14px;
-    border-radius:7px;cursor:pointer;
-    transition:border-color .15s,color .15s;
+    font-family:var(--pixel); font-size:7px; letter-spacing:.04em;
+    color:var(--text); cursor:pointer; padding:10px 12px;
+    background:linear-gradient(180deg, var(--body) 0%, var(--body-dark) 100%);
+    border:2px solid var(--bezel);
+    box-shadow: inset 0 2px 0 var(--body-lit), inset 0 -2px 0 rgba(0,0,0,.5);
   }
-  button.btn:hover{border-color:var(--amber);color:var(--amber)}
-  button.btn:active{transform:translateY(1px)}
-  button.btn:disabled{opacity:.35;cursor:not-allowed}
-  button.btn.danger:hover{border-color:var(--red);color:var(--red)}
-
-  .unsupported{
-    background:var(--panel);border:1px solid var(--red-dim);border-radius:10px;
-    padding:16px 18px;color:var(--text-dim);font-size:13px;line-height:1.55;
-    margin-bottom:20px;
+  button.btn:hover{ color:var(--red-lit); }
+  button.btn:active{
+    box-shadow: inset 0 2px 4px rgba(0,0,0,.7);
+    transform:translateY(1px);
   }
-  .unsupported b{color:var(--red)}
+  button.btn:disabled{ opacity:.35; cursor:not-allowed; }
+  button.btn:focus-visible, .switch:focus-visible, .enum-btn:focus-visible{
+    outline:2px solid var(--red-lit); outline-offset:2px;
+  }
 
-  /* Presets bar */
+  .unsupported, .mismatch{
+    background:var(--body-dark); border:2px solid var(--red);
+    padding:14px 16px; color:var(--text); font-size:12px;
+    line-height:1.6; margin-bottom:16px;
+  }
+  .unsupported b, .mismatch b{
+    color:var(--red-lit); font-family:var(--pixel); font-size:8px;
+    display:block; margin-bottom:7px; line-height:1.5;
+  }
+  .mismatch code{ background:var(--slot); padding:1px 5px; color:var(--text); }
+
+  /* ---- Preset bar ---- */
   .presets{
-    display:flex;align-items:center;gap:10px;flex-wrap:wrap;
-    background:var(--panel);border:1px solid var(--line);border-radius:12px;
-    padding:12px 14px;margin-bottom:18px;
+    display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+    background:linear-gradient(180deg, var(--body) 0%, var(--body-dark) 100%);
+    border:2px solid var(--bezel);
+    box-shadow: inset 0 2px 0 var(--body-lit), inset 0 -2px 0 rgba(0,0,0,.55);
+    padding:12px 13px; margin-bottom:16px;
   }
-  .presets .label{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-dim);margin-right:2px}
+  .presets .label{
+    font-family:var(--pixel); font-size:7px; color:var(--text-dim);
+    margin-right:4px;
+  }
   select{
-    font-family:var(--mono);font-size:12.5px;background:var(--groove);
-    color:var(--text);border:1px solid var(--line);border-radius:7px;
-    padding:8px 10px;
+    font-family:var(--mono); font-size:12px; font-weight:500;
+    background:var(--slot); color:var(--text);
+    border:2px solid var(--bezel); padding:9px 9px;
   }
 
-  /* Modules */
-  .modules{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:16px}
+  /* ---- Modules: cartridge labels ---- */
+  .modules{ display:grid; grid-template-columns:repeat(auto-fill,minmax(285px,1fr)); gap:14px; }
   .module{
-    position:relative;
-    background:linear-gradient(180deg,var(--panel) 0%,var(--panel-2) 100%);
-    border:1px solid var(--line);border-radius:14px;padding:16px 16px 18px;
+    background:linear-gradient(180deg, var(--body) 0%, var(--body-dark) 100%);
+    border:2px solid var(--bezel);
+    box-shadow: inset 0 2px 0 var(--body-lit), inset 0 -2px 0 rgba(0,0,0,.55);
+    padding:0 0 14px;
   }
-  .module::before,.module::after{
-    content:'';position:absolute;width:5px;height:5px;border-radius:50%;
-    background:var(--groove);box-shadow:inset 0 1px 1px #000,0 0 0 1px #2a313b;
-  }
-  .module::before{top:10px;left:10px}
-  .module::after{top:10px;right:10px}
   .module h2{
-    font-family:var(--display);font-size:13px;font-weight:600;
-    letter-spacing:.08em;text-transform:uppercase;margin:0 0 12px;
+    font-family:var(--pixel); font-size:8px; letter-spacing:.04em;
+    margin:0 0 13px; padding:11px 12px; line-height:1.5;
+    color:var(--text);
+    background:var(--red);
+    border-bottom:2px solid var(--bezel);
+    text-shadow:1px 1px 0 rgba(0,0,0,.45);
   }
+  .ctl{ margin:0 13px 14px; }
+  .ctl:last-child{ margin-bottom:0; }
+  .ctl .row{ display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:7px; }
+  .ctl .name{ font-family:var(--pixel); font-size:7px; color:var(--text-dim); line-height:1.5; }
+  .ctl .value{ font-size:12px; font-weight:700; color:var(--red-lit); }
+  .ctl .help{ font-size:10.5px; color:var(--text-dim); margin-top:6px; line-height:1.5; }
 
-  .ctl{margin-bottom:14px}
-  .ctl:last-child{margin-bottom:0}
-  .ctl .row{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
-  .ctl .name{font-size:11.5px;letter-spacing:.05em;text-transform:uppercase;color:var(--text-dim)}
-  .ctl .value{font-size:12.5px;font-weight:600;color:var(--amber)}
-  .ctl .help{font-size:10.5px;color:var(--text-dim);margin-top:5px;line-height:1.45}
-
+  /* ---- Toggle: the controller's A/B button ---- */
   .switch{
-    width:46px;height:24px;border-radius:5px;background:var(--groove);
-    border:1px solid var(--line);position:relative;cursor:pointer;padding:2px;
-    flex:none;
+    width:34px; height:34px; border-radius:50%; flex:none; cursor:pointer;
+    background:radial-gradient(circle at 38% 32%, #6a2621 0%, #47110e 70%);
+    border:2px solid var(--bezel);
+    box-shadow: inset 0 -2px 3px rgba(0,0,0,.6);
+    display:flex; align-items:center; justify-content:center;
   }
-  .switch .led{width:18px;height:18px;border-radius:4px;background:#2a313b;transition:all .15s}
-  .switch.active{border-color:var(--amber-dim)}
-  .switch.active .led{transform:translateX(20px);background:var(--amber);box-shadow:0 0 10px 1px rgba(255,180,84,.6)}
+  .switch .led{
+    width:9px; height:9px; border-radius:50%;
+    background:#2a0c0a; transition:background .12s, box-shadow .12s;
+  }
+  .switch.active{
+    background:radial-gradient(circle at 38% 32%, var(--red-lit) 0%, var(--red) 72%);
+  }
+  .switch.active .led{ background:#ffd9d4; box-shadow:0 0 8px rgba(255,120,110,.95); }
 
+  /* ---- Sliders ---- */
   input[type=range]{
-    -webkit-appearance:none;appearance:none;width:100%;height:22px;
-    background:transparent;cursor:pointer;margin:0;
+    -webkit-appearance:none; appearance:none; width:100%;
+    height:20px; background:transparent; cursor:pointer; margin:0;
   }
   input[type=range]::-webkit-slider-runnable-track{
-    height:6px;border-radius:3px;background:var(--groove);
-    border:1px solid #000;
+    height:8px; background:var(--slot); border:2px solid var(--bezel);
   }
   input[type=range]::-webkit-slider-thumb{
-    -webkit-appearance:none;width:16px;height:16px;border-radius:4px;
-    background:var(--text);border:1px solid #000;margin-top:-6px;
-    box-shadow:0 1px 3px rgba(0,0,0,.6);
+    -webkit-appearance:none; width:14px; height:18px; margin-top:-7px;
+    background:linear-gradient(180deg, var(--body-lit) 0%, var(--body-dark) 100%);
+    border:2px solid var(--bezel);
   }
-  input[type=range]:hover::-webkit-slider-thumb{background:var(--amber)}
-  input[type=range]::-moz-range-track{height:6px;border-radius:3px;background:var(--groove);border:1px solid #000}
-  input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:4px;background:var(--text);border:1px solid #000}
+  input[type=range]:hover::-webkit-slider-thumb{
+    background:linear-gradient(180deg, var(--red-lit) 0%, var(--red) 100%);
+  }
+  input[type=range]::-moz-range-track{
+    height:8px; background:var(--slot); border:2px solid var(--bezel);
+  }
+  input[type=range]::-moz-range-thumb{
+    width:14px; height:18px; border-radius:0;
+    background:var(--body-lit); border:2px solid var(--bezel);
+  }
 
-  .enum-row{display:flex;gap:6px;flex-wrap:wrap}
+  /* ---- Enum rows ---- */
+  .enum-row{ display:flex; gap:5px; flex-wrap:wrap; }
   .enum-btn{
-    background:var(--groove);border:1px solid var(--line);border-radius:7px;
-    padding:7px 10px;font-size:11px;letter-spacing:.03em;color:var(--text-dim);
-    cursor:pointer;font-family:var(--mono);
+    font-family:var(--pixel); font-size:7px; line-height:1.5;
+    background:var(--slot); color:var(--text-dim);
+    border:2px solid var(--bezel); padding:8px 8px; cursor:pointer;
   }
-  .enum-btn.active{border-color:var(--amber-dim);color:var(--amber);box-shadow:inset 0 0 0 1px rgba(255,180,84,.15)}
+  .enum-btn:hover{ color:var(--text); }
+  .enum-btn.active{
+    background:var(--red); color:#fff;
+    text-shadow:1px 1px 0 rgba(0,0,0,.45);
+  }
 
+  /* ---- Serial log ---- */
   .console{
-    margin-top:18px;background:var(--groove);border:1px solid var(--line);
-    border-radius:10px;padding:12px 14px;
+    margin-top:16px; background:var(--slot);
+    border:2px solid var(--bezel); padding:12px 13px;
   }
-  .console-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
-  .console-head .label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-dim)}
-  .console .clear{font-size:10.5px;color:var(--text-dim);background:none;border:none;cursor:pointer;text-transform:uppercase}
-  .console .clear:hover{color:var(--amber)}
-  .log{height:120px;overflow-y:auto;font-size:11.5px;line-height:1.6;color:var(--text-dim)}
-  .log .tx{color:var(--green)}
-  .log .rx{color:var(--amber)}
-  .log .sys{color:var(--text-dim);font-style:italic}
-  .log .err{color:var(--red)}
+  .console-head{ display:flex; justify-content:space-between; align-items:center; margin-bottom:9px; }
+  .console-head .label{ font-family:var(--pixel); font-size:7px; color:var(--text-dim); }
+  .console .clear{
+    font-family:var(--pixel); font-size:7px; color:var(--text-dim);
+    background:none; border:none; cursor:pointer;
+  }
+  .console .clear:hover{ color:var(--red-lit); }
+  .log{ height:122px; overflow-y:auto; font-size:11.5px; line-height:1.65; color:var(--text-dim); }
+  .log .tx{ color:var(--green); }
+  .log .rx{ color:#d8c98a; }
+  .log .sys{ color:var(--text-dim); font-style:italic; }
+  .log .err{ color:var(--red-lit); }
 
-  footer{text-align:center;color:var(--text-dim);font-size:11px;margin-top:22px;letter-spacing:.03em}
+  footer{
+    text-align:center; color:var(--text-dim);
+    font-family:var(--pixel); font-size:7px; line-height:1.9;
+    margin-top:20px;
+  }
+
+  @media (prefers-reduced-motion: reduce){
+    *{ transition:none !important; }
+  }
+  @media (max-width:560px){
+    .brand h1{ font-size:15px; }
+    .head-inner{ padding:14px; }
+  }
 </style>
 </head>
 <body>
 <div class="rack">
 
   <header>
-    <div class="brand">
-      <div class="eyebrow">8B8 Firmware Companion</div>
-      <h1>AY <span>Panel</span></h1>
-      <p>Generated from generate.py — __NUM_PARAMS__ parameters, live over USB serial. Changes apply immediately; SAVE persists them to the unit's EEPROM.</p>
-    </div>
-    <div class="connection">
-      <div class="status-pill" id="statusPill"><span class="dot"></span><span id="statusText">Disconnected</span></div>
-      <button class="btn" id="connectBtn">Connect</button>
-      <button class="btn danger" id="disconnectBtn" disabled>Disconnect</button>
+    <div class="stripe"><i></i><i></i><i></i><i></i><i></i></div>
+    <div class="head-inner">
+      <div class="brand">
+        <div class="eyebrow">Semiotic Sounds</div>
+        <h1>8-BIT<br>8ASTERD <span>&#9632;</span></h1>
+        <p>Three AY-3-8910s under live control. Generated from generate.py &mdash; __NUM_PARAMS__ parameters over USB serial. SAVE writes them to the unit.</p>
+      </div>
+      <div class="connection">
+        <div class="status-pill" id="statusPill"><span class="dot"></span><span id="statusText">Disconnected</span></div>
+        <button class="btn" id="connectBtn">Connect</button>
+        <button class="btn danger" id="disconnectBtn" disabled>Disconnect</button>
+      </div>
     </div>
   </header>
 
   <div class="unsupported" id="unsupported" style="display:none;">
     <b>Web Serial isn't available here.</b> This panel needs Chrome or Edge (desktop),
     opened as a local file — Safari and Firefox don't implement the Web Serial API yet.
+  </div>
+
+  <div class="mismatch" id="mismatch" style="display:none;">
+    <b>Firmware doesn't match this panel.</b>
+    <span id="mismatchDetail"></span>
+    Re-run <code>generate.py</code>, then recompile and re-flash. Until you do,
+    every control here writes to the wrong parameter on the unit.
   </div>
 
   <div class="presets">
@@ -471,7 +610,7 @@ HTML_TEMPLATE = r"""<!doctype html>
     <div class="log" id="log"></div>
   </div>
 
-  <footer>8B8 — three AY-3-8910s, one Leonardo, no filters, no regrets.</footer>
+  <footer>NO FILTERS &#9632; NO REGRETS</footer>
 </div>
 
 <script>
@@ -479,6 +618,7 @@ HTML_TEMPLATE = r"""<!doctype html>
 const PARAMS  = __PARAMS_JSON__;
 const PRESETS = __PRESETS_JSON__;
 const NUM_PARAMS = __NUM_PARAMS__;
+const LAYOUT_VERSION = __LAYOUT_VERSION__;  // must match the flashed firmware
 
 /* ==== State ============================================================= */
 const values = PARAMS.map(p => p.default);
@@ -496,6 +636,7 @@ document.getElementById('clearLog').onclick = () => { logEl.innerHTML = ''; };
 
 /* ==== Web Serial ======================================================== */
 let port = null, reader = null, writer = null, inBuf = '';
+let sawLayout = false;
 const statusPill = document.getElementById('statusPill');
 const statusText = document.getElementById('statusText');
 const connectBtn = document.getElementById('connectBtn');
@@ -520,7 +661,20 @@ async function connect(){
     setStatus('on','Connected');
     log('sys','Connected.');
     readLoop();
+    sawLayout = false;
     send('DUMP');
+    // Firmware older than the handshake answers DUMP with PRESET: but no
+    // LAYOUT: line at all, which is itself a mismatch worth reporting.
+    setTimeout(() => {
+      if (!sawLayout && port){
+        document.getElementById('mismatchDetail').textContent =
+          'The unit did not report a parameter layout at all, so it predates ' +
+          'this panel. This panel expects layout 0x' +
+          LAYOUT_VERSION.toString(16).toUpperCase() + ' with ' + NUM_PARAMS + ' parameters.';
+        document.getElementById('mismatch').style.display = 'block';
+        log('err', 'No LAYOUT reply \u2014 flashed firmware is out of date.');
+      }
+    }, 1500);
   }catch(err){
     setStatus('err','Connect failed');
     log('err','Connect failed: ' + err.message);
@@ -578,6 +732,27 @@ function handleLine(line){
     if (idx >= 0 && idx < NUM_PARAMS && !isNaN(val)){
       values[idx] = val;
       renderOne(idx);
+    }
+  }
+  else if (line.startsWith('LAYOUT:')){
+    log('rx','\u00ab ' + line);
+    const [vStr, cStr] = line.slice(7).split(',');
+    const fwVer   = parseInt(vStr, 16);
+    const fwCount = parseInt(cStr, 10);
+    sawLayout = true;
+    const ok = (fwVer === LAYOUT_VERSION && fwCount === NUM_PARAMS);
+    const box = document.getElementById('mismatch');
+    if (ok){
+      box.style.display = 'none';
+      log('sys', 'Firmware layout 0x' + fwVer.toString(16).toUpperCase() +
+                 ' with ' + fwCount + ' parameters \u2014 matches this panel.');
+    } else {
+      document.getElementById('mismatchDetail').textContent =
+        'The unit reports layout 0x' + (isNaN(fwVer) ? '??' : fwVer.toString(16).toUpperCase()) +
+        ' with ' + fwCount + ' parameters; this panel was generated for layout 0x' +
+        LAYOUT_VERSION.toString(16).toUpperCase() + ' with ' + NUM_PARAMS + '.';
+      box.style.display = 'block';
+      log('err', 'LAYOUT MISMATCH \u2014 the flashed firmware is not this version.');
     }
   }
   else if (line.startsWith('SAVED:')){
@@ -759,7 +934,8 @@ def emit_html(path):
     html = (HTML_TEMPLATE
             .replace("__PARAMS_JSON__", json.dumps(PARAMS))
             .replace("__PRESETS_JSON__", json.dumps(presets_arrays))
-            .replace("__NUM_PARAMS__", str(len(PARAMS))))
+            .replace("__NUM_PARAMS__", str(len(PARAMS)))
+            .replace("__LAYOUT_VERSION__", str(layout_version())))
     with open(path, "w") as f:
         f.write(html)
     print(f"wrote {path}  ({len(PRESETS)} presets)")
