@@ -190,6 +190,23 @@
   body.compact .ctl{ margin-bottom:10px; }
 
 
+  /* ---- Octave steppers ---- */
+  .oct{ display:flex; align-items:center; gap:0; flex:none; }
+  .oct button{
+    font-family:var(--pixel); font-size:calc(9px * var(--ui-scale));
+    width:30px; height:30px; cursor:pointer; color:var(--text);
+    background:linear-gradient(180deg, var(--body) 0%, var(--body-dark) 100%);
+    border:2px solid var(--bezel);
+  }
+  .oct button:hover{ color:var(--accent-lit); }
+  .oct button:active{ background:var(--accent); color:var(--on-accent); }
+  .oct span{
+    min-width:34px; text-align:center; font-family:var(--pixel);
+    font-size:calc(7px * var(--ui-scale)); color:var(--accent-lit);
+    background:var(--slot); border:2px solid var(--bezel);
+    border-left:0; border-right:0; padding:8px 0;
+  }
+
   /* ---- Play surface: chord matrix, strumpad, keyboard ---- */
   .play-wrap{ display:flex; gap:14px; flex-wrap:wrap; padding:12px 13px; }
   .matrix{ flex:1 1 420px; }
@@ -534,6 +551,10 @@
         <div class="switch" id="latchSw"><div class="led"></div></div>
         <span class="label">Barry</span>
         <div class="switch" id="barrySw"><div class="led"></div></div>
+        <span class="label">Chord 8ve</span>
+        <div class="oct" id="chordOct"></div>
+        <span class="label">Strum 8ve</span>
+        <div class="oct" id="strumOct"></div>
         <span class="spacer"></span>
         <span class="label" id="chordName">&mdash;</span>
       </div>
@@ -548,6 +569,12 @@
 
     <div class="module">
       <h2>Keyboard</h2>
+      <div class="bar" style="margin:0 13px 10px;">
+        <span class="label">Octave</span>
+        <div class="oct" id="kbOct"></div>
+        <span class="spacer"></span>
+        <span class="label" id="kbRange">C4 &ndash; B5</span>
+      </div>
       <div class="piano-scroll"><div class="piano" id="piano"></div></div>
       <div class="pads" id="pads"></div>
     </div>
@@ -1067,6 +1094,38 @@ const CHORDS = {
 const STRUM_SEGMENTS = 12;
 
 let sharpOn = false, latchOn = false, barryOn = false;
+let chordOct = 0, strumOct = 0, kbOct = 0;
+
+// A small -/+ stepper. Limits differ per control because each sits at a
+// different height in the firmware's MIDI 24..96 note table, and a setting
+// that just gets folded back in looks like a broken button.
+function makeOctave(id, get, set, lo, hi){
+  const host = document.getElementById(id);
+  if (!host) return () => {};
+  const minus = document.createElement('button'); minus.textContent = '\u2212';
+  const read  = document.createElement('span');
+  const plus  = document.createElement('button'); plus.textContent = '+';
+  host.appendChild(minus); host.appendChild(read); host.appendChild(plus);
+
+  function show(){
+    const v = get();
+    read.textContent = v > 0 ? ('+' + v) : String(v);
+  }
+  function bump(d){
+    const v = Math.max(lo, Math.min(hi, get() + d));
+    set(v);
+    try { localStorage.setItem('8b8.' + id, v); } catch(e){}
+    show();
+  }
+  minus.onclick = () => bump(-1);
+  plus.onclick  = () => bump(1);
+  try {
+    const saved = localStorage.getItem('8b8.' + id);
+    if (saved !== null) set(Math.max(lo, Math.min(hi, parseInt(saved, 10) || 0)));
+  } catch(e){}
+  show();
+  return show;
+}
 let activeRoot = 1;               // column currently selected
 let heldRows = new Set();         // rows held within that column
 let chordNotes = [];
@@ -1087,8 +1146,8 @@ function chordSpec(){
 function chordFor(){
   const spec = chordSpec();
   if (!spec) return [];
-  const base = ROOTS[activeRoot][1] + (sharpOn ? 1 : 0);
-  return spec.tones.map(t => base + t);
+  const base = ROOTS[activeRoot][1] + (sharpOn ? 1 : 0) + chordOct * 12;
+  return spec.tones.map(t => Math.max(24, Math.min(96, base + t)));
 }
 
 // The harp: chord tones stacked upward until twelve sections are filled, so
@@ -1096,8 +1155,14 @@ function chordFor(){
 function ladderFor(){
   const spec = chordSpec();
   if (!spec) return [];
-  const tones = spec.tones;
-  const base = ROOTS[activeRoot][1] + (sharpOn ? 1 : 0) + 12;
+  // A three-note chord stacked twelve deep spans four octaves and runs out
+  // of room at the top of the note table, leaving the octave control with
+  // nowhere to go. Padding triads to four notes makes the ladder three
+  // octaves instead. The padding note is the sixth rather than the octave:
+  // the octave would land on the same pitch as the next repeat's root and
+  // stall the ladder, and a sixth is a harp-ish colour in any case.
+  const tones = spec.tones.length === 3 ? spec.tones.concat([9]) : spec.tones;
+  const base = ROOTS[activeRoot][1] + (sharpOn ? 1 : 0) - 12 + strumOct * 12;
   let out = [];
   for (let i = 0; i < STRUM_SEGMENTS; i++){
     out.push(base + tones[i % tones.length] + 12 * Math.floor(i / tones.length));
@@ -1245,6 +1310,21 @@ function buildPlaySurface(){
   };
 
   buildKeyboard();
+
+  makeOctave('chordOct', () => chordOct, v => {
+    chordOct = v;
+    if (heldRows.size) refreshChord();
+  }, -2, 2);
+  makeOctave('strumOct', () => strumOct, v => {
+    strumOct = v;
+    if (heldRows.size) strumNotes = ladderFor();
+  }, -1, 2);
+  // The piano sits at C4 and is two octaves wide, so it can drop further
+  // than it can climb before the top of the table folds keys together.
+  const showKb = makeOctave('kbOct', () => kbOct, v => { kbOct = v; showKbRange(); }, -3, 1);
+  showKb();
+  showKbRange();
+
   buildSequencer();
   buildGamepad();
 }
@@ -1320,6 +1400,20 @@ function buildKeyboard(){
   });
 }
 
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+function noteName(n){ return NOTE_NAMES[n % 12] + (Math.floor(n / 12) - 1); }
+
+// Applied when a key is struck rather than baked into the elements, so the
+// octave can change with notes held without stranding them.
+function kbNote(n){ return Math.max(24, Math.min(96, n + kbOct * 12)); }
+
+function showKbRange(){
+  const el = document.getElementById('kbRange');
+  if (!el) return;
+  el.textContent = noteName(kbNote(PIANO_BASE)) + ' \u2013 ' +
+                   noteName(kbNote(PIANO_BASE + PIANO_OCTAVES * 12 - 1));
+}
+
 function paintKey(letter, on){
   document.querySelectorAll('[data-key="' + letter + '"]').forEach(e => e.classList.toggle('down', on));
 }
@@ -1330,7 +1424,7 @@ window.addEventListener('keydown', e => {
   const m = keyToNote[k];
   if (!m || heldKeys.has(k)) return;
   heldKeys.add(k);
-  playNote(m.note, 100, m.chan);
+  playNote(m.chan === 9 ? m.note : kbNote(m.note), 100, m.chan);
   paintKey(k, true);
 });
 window.addEventListener('keyup', e => {
@@ -1338,7 +1432,7 @@ window.addEventListener('keyup', e => {
   if (!heldKeys.has(k)) return;
   heldKeys.delete(k);
   const m = keyToNote[k];
-  if (m && m.chan !== 9) stopNote(m.note, 0);
+  if (m && m.chan !== 9) stopNote(kbNote(m.note), 0);
   paintKey(k, false);
 });
 
@@ -1347,8 +1441,9 @@ document.addEventListener('pointerdown', e => {
   const el = e.target.closest('.wkey, .bkey, .pad');
   if (!el) return;
   e.preventDefault();
-  const note = el.dataset.note | 0;
+  const raw = el.dataset.note | 0;
   const drum = el.dataset.drum === '1';
+  const note = drum ? raw : kbNote(raw);
   playNote(note, 100, drum ? 9 : 0);
   el.classList.add('down');
   const up = () => {
