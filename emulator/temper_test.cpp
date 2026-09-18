@@ -30,14 +30,41 @@ static int periodForNote(int note, int temperament, int root) {
 }
 int main() {
   auto cents = [](double a, double b){ return 1200.0 * log2(b / a); };
+  int failures = 0;
+
+  // Expected third in cents, and how far off the AY's integer divisor can
+  // drag it at this pitch. At C3/E3 one divisor step is about 4 cents, so
+  // 6 is tight enough to catch a real regression without being flaky.
+  struct Case { int id; const char *name; double expect; };
+  const Case cases[] = {
+    { 0, "Equal",    400.0 },
+    { 2, "Just",     386.3 },
+    { 1, "Meantone", 386.3 },
+    { 6, "Vallotti", 392.2 },
+  };
+  const double TOLERANCE = 6.0;
+
   printf("major third C-E, measured from the programmed tone periods\n\n");
-  for (auto t : {std::pair<int,const char*>{0,"Equal"}, {2,"Just"}, {1,"Meantone"}, {6,"Vallotti"}}) {
-    int pc = periodForNote(48, t.first, 0);     // C3
-    int pe = periodForNote(52, t.first, 0);     // E3
-    if (pc < 0 || pe < 0) { printf("  %-9s FAILED to read a period\n", t.second); continue; }
+  for (const auto &c : cases) {
+    int pc = periodForNote(48, c.id, 0);     // C3
+    int pe = periodForNote(52, c.id, 0);     // E3
+    if (pc < 0 || pe < 0) {
+      printf("  %-9s FAILED to read a tone period\n", c.name);
+      failures++;
+      continue;
+    }
     double fc = 1e6 / (16.0 * pc), fe = 1e6 / (16.0 * pe);
-    printf("  %-9s C=%7.2fHz E=%7.2fHz  third = %6.1f cents\n", t.second, fc, fe, cents(fc, fe));
+    double third = cents(fc, fe), err = fabs(third - c.expect);
+    bool ok = err <= TOLERANCE;
+    if (!ok) failures++;
+    printf("  %-9s C=%7.2fHz E=%7.2fHz  third = %6.1f cents  (want %.1f +/-%.0f) %s\n",
+           c.name, fc, fe, third, c.expect, TOLERANCE, ok ? "ok" : "FAIL");
   }
-  printf("\n  reference: equal 400.0, just 386.3, quarter-comma meantone 386.3\n");
+
+  if (failures) {
+    printf("\ntemperament test: %d failure(s)\n", failures);
+    return 1;
+  }
+  printf("\ntemperament test: all temperaments land within %.0f cents of theory\n", TOLERANCE);
   return 0;
 }

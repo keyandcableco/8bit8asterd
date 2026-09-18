@@ -1,0 +1,84 @@
+name: build
+
+on:
+  push:
+    branches: [main, 'feature/**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # 1. The generated files must match generate.py. parameters.h, temperaments.h
+  #    and both panels are generated, so an edit to generate.py without a
+  #    regenerate leaves the repo inconsistent -- and a stale parameters.h means
+  #    a layout version that no longer matches the panel.
+  generated:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Regenerate
+        run: python3 generate.py
+      - name: Fail if anything changed
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::Generated files are out of date. Run: python3 generate.py"
+            exit 1
+          fi
+
+  # 2. The firmware must actually fit and compile for the real target. This is
+  #    the check that catches prototype-ordering breakage and RAM creep before
+  #    anyone flashes a board.
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-arduino-cli@v2
+      - name: Install core and libraries
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install arduino:avr
+          arduino-cli lib install "MIDIUSB"
+          arduino-cli lib install "MIDI Library"
+      - name: Compile for Leonardo
+        run: |
+          mkdir -p build/8b8_firmware
+          cp 8b8_firmware.ino parameters.h temperaments.h build/8b8_firmware/
+          arduino-cli compile --fqbn arduino:avr:leonardo \
+            --warnings default build/8b8_firmware | tee compile.log
+      - name: Report flash and RAM headroom
+        run: |
+          grep -E "program storage|dynamic memory" compile.log
+          if grep -q "Low memory available" compile.log; then
+            echo "::warning::RAM is tight -- see the dynamic memory line above"
+          fi
+
+  # 3. The emulator runs the real firmware, so building it natively is also a
+  #    second compiler's opinion on the firmware source.
+  emulator:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Native build
+        run: |
+          chmod +x emulator/build-native.sh
+          ./emulator/build-native.sh
+      - name: Render a WAV and check it is not silent
+        run: |
+          /tmp/8b8emu /tmp/out.wav
+          python3 - <<'PY'
+          import wave, struct, math
+          w = wave.open('/tmp/out.wav'); n = w.getnframes()
+          d = struct.unpack(f"<{n}h", w.readframes(n))
+          peak = max(abs(x) for x in d)
+          rms = math.sqrt(sum(x*x for x in d) / len(d))
+          print(f"{n} frames, peak {peak}, rms {rms:.0f}")
+          assert peak > 1000, "emulator rendered silence"
+          PY
+      - name: Temperament check
+        run: |
+          g++ -std=c++17 -O2 -x c++ -Iemulator -I. \
+              -Wno-narrowing emulator/host.cpp emulator/temper_test.cpp -o /tmp/tempertest
+          /tmp/tempertest
