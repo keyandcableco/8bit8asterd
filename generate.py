@@ -603,18 +603,76 @@ HTML_TEMPLATE = r"""<!doctype html>
     color:var(--text-dim); text-align:center; padding-bottom:4px;
   }
 
-  .keys{ display:flex; gap:3px; flex-wrap:wrap; padding:0 13px 12px; }
-  .key{
-    font-family:var(--mono); font-size:calc(10px * var(--ui-scale));
-    min-width:34px; padding:16px 6px 8px; text-align:center; cursor:pointer;
-    background:linear-gradient(180deg, var(--body-lit) 0%, var(--body) 100%);
-    border:2px solid var(--bezel); color:var(--text); user-select:none;
-    touch-action:none;
+  /* ---- Piano: whites in a row, blacks floated over the gaps ---- */
+  .piano-scroll{ overflow-x:auto; padding:0 13px 10px; }
+  .piano{
+    position:relative; display:flex; gap:0;
+    min-width:min(100%, 520px); height:clamp(90px, 18vw, 130px);
+    touch-action:none; user-select:none;
   }
-  .key.sharp{ background:linear-gradient(180deg, var(--body-dark) 0%, var(--slot) 100%); color:var(--text-dim); }
-  .key.drum{ background:linear-gradient(180deg, var(--accent-dim) 0%, var(--slot) 100%); }
-  .key.down{ background:var(--accent); color:var(--on-accent); }
-  .key b{ display:block; font-family:var(--pixel); font-size:calc(7px * var(--ui-scale)); opacity:.7; margin-bottom:4px; }
+  .wkey{
+    flex:1 0 0; min-width:26px; position:relative;
+    background:linear-gradient(180deg, #e8e5dc 0%, #bdbab1 100%);
+    border:2px solid var(--bezel); border-right-width:1px;
+    border-radius:0 0 3px 3px; cursor:pointer;
+  }
+  .wkey:last-child{ border-right-width:2px; }
+  .wkey.down{ background:linear-gradient(180deg, var(--accent-lit) 0%, var(--accent) 100%); }
+  .wkey b{
+    position:absolute; bottom:5px; left:0; right:0; text-align:center;
+    font-family:var(--pixel); font-size:calc(6px * var(--ui-scale));
+    color:#3a3a3a; pointer-events:none;
+  }
+  .bkey{
+    position:absolute; top:0; height:62%; z-index:2;
+    background:linear-gradient(180deg, #3a3a3d 0%, #121214 100%);
+    border:2px solid var(--bezel); border-radius:0 0 3px 3px;
+    cursor:pointer; transform:translateX(-50%);
+  }
+  .bkey.down{ background:linear-gradient(180deg, var(--accent) 0%, var(--accent-dim) 100%); }
+  .bkey b{
+    position:absolute; bottom:4px; left:0; right:0; text-align:center;
+    font-family:var(--pixel); font-size:calc(6px * var(--ui-scale));
+    color:#cfcfcf; pointer-events:none;
+  }
+
+  /* ---- Drum pads: big touch targets, nothing fiddly ---- */
+  .pads{
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(78px,1fr));
+    gap:6px; padding:0 13px 13px;
+  }
+  .pad{
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    padding:18px 4px; text-align:center; cursor:pointer; user-select:none;
+    background:linear-gradient(180deg, var(--accent-dim) 0%, var(--slot) 100%);
+    border:2px solid var(--bezel); color:var(--text); touch-action:none;
+  }
+  .pad.down{ background:var(--accent); color:var(--on-accent); }
+  .pad b{ display:block; font-size:calc(6px * var(--ui-scale)); opacity:.6; margin-bottom:5px; }
+
+  /* ---- Sequencer ---- */
+  .seq{ padding:0 13px 13px; overflow-x:auto; }
+  .seqrow{ display:flex; align-items:center; gap:3px; margin-bottom:3px; }
+  .seqname{
+    flex:0 0 72px; font-family:var(--pixel);
+    font-size:calc(6px * var(--ui-scale)); color:var(--text-dim);
+    cursor:pointer; padding:4px 0;
+  }
+  .seqname:hover{ color:var(--accent-lit); }
+  .step{
+    flex:1 1 0; min-width:18px; height:26px; cursor:pointer;
+    background:var(--slot); border:2px solid var(--bezel); touch-action:none;
+  }
+  .step.beat{ border-color:var(--body-lit); }
+  .step.on{ background:var(--accent); }
+  .step.playing{ box-shadow:inset 0 0 0 2px var(--warn); }
+  .seqhead{ display:flex; gap:3px; margin:0 0 5px 75px; }
+  .seqhead div{
+    flex:1 1 0; min-width:18px; text-align:center;
+    font-family:var(--pixel); font-size:calc(6px * var(--ui-scale));
+    color:var(--text-dim);
+  }
+  .seqhead div.beat{ color:var(--accent-lit); }
 
   /* ---- Section nav: one band at a time, nothing to scroll past ---- */
   .nav{ gap:6px; }
@@ -833,7 +891,35 @@ __TRANSPORT_UI__
         </div>
         <div class="strum" id="strum"></div>
       </div>
-      <div class="keys" id="keys"></div>
+    </div>
+
+    <div class="module">
+      <h2>Keyboard</h2>
+      <div class="piano-scroll"><div class="piano" id="piano"></div></div>
+      <div class="pads" id="pads"></div>
+    </div>
+  </section>
+
+  <section class="section" id="seqSection">
+    <div class="section-head">
+      <h2>Sequencer</h2><span class="scope">16 steps</span>
+    </div>
+    <p class="section-blurb">Sixteen steps of drums. Tap the row name to audition a sound. Everything the Drums and Drum FX sections do applies while it runs, so this is the quickest way to hear what Roll, Chaos or a Warp mode actually do to a pattern.</p>
+    <div class="module">
+      <h2>Drum Sequencer</h2>
+      <div class="bar" style="margin:0 13px 10px;">
+        <button class="btn" id="seqPlay">Play</button>
+        <button class="btn" id="seqClear">Clear</button>
+        <span class="label">Pattern</span>
+        <select id="seqPreset"></select>
+        <span class="label">Tempo</span>
+        <input type="range" id="seqTempo" min="50" max="200" value="110" style="flex:1 1 120px;max-width:200px">
+        <span class="value" id="seqBpm">110 BPM</span>
+      </div>
+      <div class="seq">
+        <div class="seqhead" id="seqHead"></div>
+        <div id="seqRows"></div>
+      </div>
     </div>
   </section>
 
@@ -1318,75 +1404,245 @@ function buildPlaySurface(){
   };
 
   buildKeyboard();
+  buildSequencer();
 }
 
-/* ---- letter-key / clickable keyboard ---- */
-const KEYMAP = {
-  'a':60,'w':61,'s':62,'e':63,'d':64,'f':65,'t':66,'g':67,'y':68,'h':69,
-  'u':70,'j':71,'k':72,'o':73,'l':74,'p':75,';':76,
-  'z':36,'x':38,'c':42,'v':46,'b':35,'n':41,'m':49
-};
-const DRUMKEYS = new Set(['z','x','c','v','b','n','m']);
+/* ---- Keyboard: two octaves of piano, plus drum pads ---- */
+// White keys carry the letter row; black keys sit over the gaps between
+// them, which is what makes it readable at a glance and on a phone.
+const WHITE = [0,2,4,5,7,9,11];                 // semitones of the naturals
+const BLACK_AFTER = { 0:1, 1:3, 3:6, 4:8, 5:10 };  // white index -> black semitone
+const PIANO_OCTAVES = 2, PIANO_BASE = 60;       // C4 up
+const WHITE_KEYS = 'asdfghjkl;\'';
+const BLACK_KEYS = 'wetyuop';
+
+const PADS = [
+  ['z', 36, 'Kick'],  ['x', 38, 'Snare'], ['c', 42, 'Hat'],   ['v', 46, 'OpnHat'],
+  ['b', 41, 'LoTom'], ['n', 50, 'HiTom'], ['m', 49, 'Crash'], [',', 56, 'Cowbell']
+];
+
+const keyToNote = {};    // letter -> {note, chan}
 const heldKeys = new Set();
 
 function buildKeyboard(){
-  const rows = [
-    [['a','C4'],['w','C#'],['s','D'],['e','D#'],['d','E'],['f','F'],['t','F#'],
-     ['g','G'],['y','G#'],['h','A'],['u','A#'],['j','B'],['k','C5'],['o','C#'],
-     ['l','D'],['p','D#'],[';','E']],
-    [['z','Kick'],['x','Snare'],['c','HatC'],['v','HatO'],['b','Kick2'],['n','Tom'],['m','Crash']]
-  ];
-  const host = document.getElementById('keys');
-  if (!host) return;
-  rows.forEach((row, ri) => {
-    row.forEach(([k, label]) => {
+  const piano = document.getElementById('piano');
+  const pads  = document.getElementById('pads');
+  if (!piano || !pads) return;
+
+  const nWhite = WHITE.length * PIANO_OCTAVES;
+  let wi = 0, bi = 0;
+
+  for (let oct = 0; oct < PIANO_OCTAVES; oct++){
+    WHITE.forEach((semi, idx) => {
+      const note = PIANO_BASE + oct * 12 + semi;
+      const letter = WHITE_KEYS[wi] || '';
+      if (letter) keyToNote[letter] = { note, chan: 0 };
       const el = document.createElement('div');
-      el.className = 'key' + (label.indexOf('#') >= 0 ? ' sharp' : '') + (ri ? ' drum' : '');
-      el.dataset.key = k;
-      el.innerHTML = '<b>' + k.toUpperCase() + '</b>' + label;
-      host.appendChild(el);
+      el.className = 'wkey';
+      el.dataset.note = note;
+      if (letter) el.dataset.key = letter;
+      el.innerHTML = letter ? '<b>' + letter.toUpperCase() + '</b>' : '';
+      piano.appendChild(el);
+      wi++;
     });
-    if (!ri){
-      const br = document.createElement('div');
-      br.style.cssText = 'flex-basis:100%;height:6px';
-      host.appendChild(br);
-    }
+  }
+
+  // Blacks are positioned on the boundary between two whites, as a
+  // percentage of the keyboard width, so they track any container size.
+  for (let oct = 0; oct < PIANO_OCTAVES; oct++){
+    Object.keys(BLACK_AFTER).forEach(k => {
+      const idx = parseInt(k, 10);
+      const note = PIANO_BASE + oct * 12 + BLACK_AFTER[idx];
+      const pos = oct * WHITE.length + idx + 1;      // boundary after this white
+      const letter = BLACK_KEYS[bi] || '';
+      if (letter) keyToNote[letter] = { note, chan: 0 };
+      const el = document.createElement('div');
+      el.className = 'bkey';
+      el.dataset.note = note;
+      if (letter) el.dataset.key = letter;
+      el.style.left  = (pos * 100 / nWhite) + '%';
+      el.style.width = (100 / nWhite * 0.62) + '%';
+      el.innerHTML = letter ? '<b>' + letter.toUpperCase() + '</b>' : '';
+      piano.appendChild(el);
+      bi++;
+    });
+  }
+
+  PADS.forEach(([letter, note, label]) => {
+    keyToNote[letter] = { note, chan: 9 };
+    const el = document.createElement('div');
+    el.className = 'pad';
+    el.dataset.note = note; el.dataset.key = letter; el.dataset.drum = '1';
+    el.innerHTML = '<b>' + letter.toUpperCase() + '</b>' + label;
+    pads.appendChild(el);
   });
 }
 
-function paintKey(k, on){
-  const el = document.querySelector('[data-key="' + k + '"]');
-  if (el) el.classList.toggle('down', on);
+function paintKey(letter, on){
+  document.querySelectorAll('[data-key="' + letter + '"]').forEach(e => e.classList.toggle('down', on));
 }
 
 window.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
   const k = e.key.toLowerCase();
-  if (!(k in KEYMAP) || heldKeys.has(k)) return;
+  const m = keyToNote[k];
+  if (!m || heldKeys.has(k)) return;
   heldKeys.add(k);
-  playNote(KEYMAP[k], 100, DRUMKEYS.has(k) ? 9 : 0);
+  playNote(m.note, 100, m.chan);
   paintKey(k, true);
 });
 window.addEventListener('keyup', e => {
   const k = e.key.toLowerCase();
   if (!heldKeys.has(k)) return;
   heldKeys.delete(k);
-  if (!DRUMKEYS.has(k)) stopNote(KEYMAP[k], 0);
+  const m = keyToNote[k];
+  if (m && m.chan !== 9) stopNote(m.note, 0);
   paintKey(k, false);
 });
+
+// Pointer play. Drums are one-shots, so they are never held.
 document.addEventListener('pointerdown', e => {
-  const el = e.target.closest('[data-key]');
+  const el = e.target.closest('.wkey, .bkey, .pad');
   if (!el) return;
-  const k = el.dataset.key;
-  playNote(KEYMAP[k], 100, DRUMKEYS.has(k) ? 9 : 0);
+  e.preventDefault();
+  const note = el.dataset.note | 0;
+  const drum = el.dataset.drum === '1';
+  playNote(note, 100, drum ? 9 : 0);
   el.classList.add('down');
   const up = () => {
-    if (!DRUMKEYS.has(k)) stopNote(KEYMAP[k], 0);
+    if (!drum) stopNote(note, 0);
     el.classList.remove('down');
     window.removeEventListener('pointerup', up);
+    window.removeEventListener('pointercancel', up);
   };
   window.addEventListener('pointerup', up);
+  window.addEventListener('pointercancel', up);
 });
+
+/* ==== Drum sequencer ==================================================== */
+// Sixteen steps against a drift-corrected clock: each tick schedules the
+// next from when it SHOULD have fired, so the pattern does not wander the
+// way a plain setInterval does.
+const SEQ_STEPS = 16;
+const SEQ_ROWS = [
+  { name: 'Kick',   note: 36 },
+  { name: 'Snare',  note: 38 },
+  { name: 'Hat',    note: 42 },
+  { name: 'OpnHat', note: 46 },
+  { name: 'LoTom',  note: 41 },
+  { name: 'HiTom',  note: 50 },
+  { name: 'Rim',    note: 37 },
+  { name: 'Crash',  note: 49 }
+];
+const SEQ_PATTERNS = {
+  'Empty':    {},
+  'Four/Four':{ Kick:[0,4,8,12], Snare:[4,12], Hat:[0,2,4,6,8,10,12,14] },
+  'Breakbeat':{ Kick:[0,3,9,10], Snare:[4,12], Hat:[0,2,4,6,8,10,12,14], OpnHat:[14] },
+  'Arcade':   { Kick:[0,6,8,14], Snare:[4,12], Rim:[2,10], Crash:[0] },
+  'Half Time':{ Kick:[0,10], Snare:[8], Hat:[0,4,8,12] },
+  'Tom Roll': { LoTom:[0,2,4,6], HiTom:[8,10,12,14], Crash:[0] }
+};
+
+let seqGrid = SEQ_ROWS.map(() => new Array(SEQ_STEPS).fill(false));
+let seqPlaying = false, seqStep = 0, seqTimer = null, seqNext = 0;
+
+function buildSequencer(){
+  const head = document.getElementById('seqHead');
+  const rows = document.getElementById('seqRows');
+  if (!head || !rows) return;
+
+  for (let i = 0; i < SEQ_STEPS; i++){
+    const d = document.createElement('div');
+    d.textContent = (i % 4 === 0) ? String(i / 4 + 1) : '';
+    if (i % 4 === 0) d.className = 'beat';
+    head.appendChild(d);
+  }
+
+  SEQ_ROWS.forEach((r, ri) => {
+    const row = document.createElement('div');
+    row.className = 'seqrow';
+    const nm = document.createElement('div');
+    nm.className = 'seqname'; nm.textContent = r.name;
+    nm.onclick = () => playNote(r.note, 110, 9);       // audition
+    row.appendChild(nm);
+    for (let si = 0; si < SEQ_STEPS; si++){
+      const c = document.createElement('div');
+      c.className = 'step' + (si % 4 === 0 ? ' beat' : '');
+      c.dataset.r = ri; c.dataset.s = si;
+      c.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        seqGrid[ri][si] = !seqGrid[ri][si];
+        c.classList.toggle('on', seqGrid[ri][si]);
+        if (seqGrid[ri][si]) playNote(r.note, 110, 9);
+      });
+      row.appendChild(c);
+    }
+    rows.appendChild(row);
+  });
+
+  const sel = document.getElementById('seqPreset');
+  Object.keys(SEQ_PATTERNS).forEach(n => {
+    const o = document.createElement('option');
+    o.value = n; o.textContent = n;
+    sel.appendChild(o);
+  });
+  sel.onchange = () => loadPattern(sel.value);
+
+  const tempo = document.getElementById('seqTempo');
+  tempo.oninput = () => { document.getElementById('seqBpm').textContent = tempo.value + ' BPM'; };
+
+  document.getElementById('seqPlay').onclick = toggleSeq;
+  document.getElementById('seqClear').onclick = () => loadPattern('Empty');
+
+  loadPattern('Four/Four');
+  document.getElementById('seqPreset').value = 'Four/Four';
+}
+
+function paintSeq(){
+  document.querySelectorAll('.step').forEach(c => {
+    c.classList.toggle('on', seqGrid[c.dataset.r | 0][c.dataset.s | 0]);
+  });
+}
+
+function loadPattern(name){
+  const p = SEQ_PATTERNS[name] || {};
+  seqGrid = SEQ_ROWS.map(r => {
+    const on = p[r.name] || [];
+    const row = new Array(SEQ_STEPS).fill(false);
+    on.forEach(i => { if (i < SEQ_STEPS) row[i] = true; });
+    return row;
+  });
+  paintSeq();
+}
+
+function seqTick(){
+  document.querySelectorAll('.step.playing').forEach(c => c.classList.remove('playing'));
+  SEQ_ROWS.forEach((r, ri) => {
+    if (seqGrid[ri][seqStep]) playNote(r.note, 110, 9);
+    const cell = document.querySelector('.step[data-r="' + ri + '"][data-s="' + seqStep + '"]');
+    if (cell) cell.classList.add('playing');
+  });
+  seqStep = (seqStep + 1) % SEQ_STEPS;
+
+  const bpm = parseInt(document.getElementById('seqTempo').value, 10) || 110;
+  const interval = 60000 / bpm / 4;            // sixteenth notes
+  seqNext += interval;
+  const drift = seqNext - performance.now();
+  seqTimer = setTimeout(seqTick, Math.max(0, drift));
+}
+
+function toggleSeq(){
+  const btn = document.getElementById('seqPlay');
+  if (seqPlaying){
+    clearTimeout(seqTimer); seqTimer = null;
+    seqPlaying = false; btn.textContent = 'Play';
+    document.querySelectorAll('.step.playing').forEach(c => c.classList.remove('playing'));
+  } else {
+    seqPlaying = true; btn.textContent = 'Stop';
+    seqStep = 0; seqNext = performance.now();
+    seqTick();
+  }
+}
 
 /* ==== Section nav ======================================================= */
 function buildNav(){
@@ -1536,9 +1792,9 @@ WASM_TRANSPORT_UI = '        <button class="btn" id="startBtn">Start Audio</butt
 
 WASM_TRANSPORT_JS = "/* ==== Emulated transport ================================================ */\n// The firmware itself, compiled to WebAssembly, driving three emulated\n// AY-3-8910s into Web Audio. The panel above is byte-identical to the one\n// that talks to real hardware over serial -- the only thing that changes is\n// what send() writes to. Same firmware, same parameters, same protocol.\n\nlet audioCtx = null, node = null, ready = false, pollTimer = null;\nconst HEAP_SAMPLES = 2048;\nlet heapPtr = 0;\n\nconst statusPill = document.getElementById('statusPill');\nconst statusText = document.getElementById('statusText');\nconst startBtn = document.getElementById('startBtn');\nconst stopBtn  = document.getElementById('stopBtn');\n\nfunction setStatus(mode, text){\n  statusPill.className = 'status-pill' + (mode ? ' ' + mode : '');\n  statusText.textContent = text;\n}\n\nfunction send(cmd){\n  log('tx','\\u00bb ' + cmd);\n  if (ready) Module.ccall('emu_send_line', null, ['string'], [cmd]);\n}\n\nfunction pollReplies(){\n  if (!ready) return;\n  const s = Module.ccall('emu_read_lines', 'string', [], []);\n  if (!s) return;\n  for (const line of s.split('\\n')) if (line.length) handleLine(line);\n}\n\nasync function startAudio(){\n  if (!window.Module || !Module.ccall){\n    log('err','The emulator core has not loaded. Did you run build-wasm.sh?');\n    setStatus('err','No core');\n    return;\n  }\n  audioCtx = new (window.AudioContext || window.webkitAudioContext)();\n  await audioCtx.resume();\n\n  Module.ccall('emu_init', null, ['number'], [audioCtx.sampleRate]);\n  heapPtr = Module._malloc(HEAP_SAMPLES * 4);\n  ready = true;\n\n  node = audioCtx.createScriptProcessor(HEAP_SAMPLES, 0, 1);\n  node.onaudioprocess = (e) => {\n    const out = e.outputBuffer.getChannelData(0);\n    Module.ccall('emu_render', null, ['number','number'], [heapPtr, out.length]);\n    out.set(Module.HEAPF32.subarray(heapPtr >> 2, (heapPtr >> 2) + out.length));\n  };\n  node.connect(audioCtx.destination);\n\n  startBtn.disabled = true; stopBtn.disabled = false;\n  setStatus('on','Running');\n  log('sys','Emulator running at ' + audioCtx.sampleRate + 'Hz.');\n\n  pollTimer = setInterval(pollReplies, 60);\n  send('DUMP');\n}\n\nfunction stopAudio(){\n  if (node) { node.disconnect(); node = null; }\n  if (audioCtx) { audioCtx.close(); audioCtx = null; }\n  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }\n  ready = false;\n  startBtn.disabled = false; stopBtn.disabled = true;\n  setStatus('','Stopped');\n}\n\nstartBtn.onclick = startAudio;\nstopBtn.onclick  = stopAudio;\n\n/* ---- playing it ---- */\nfunction playNote(note, vel, chan){\n  if (ready) Module.ccall('emu_note_on', null, ['number','number','number'], [chan||0, note, vel||100]);\n}\nfunction stopNote(note, chan){\n  if (ready) Module.ccall('emu_note_off', null, ['number','number'], [chan||0, note]);\n}\n\n// Real MIDI hardware, if the browser offers it.\nif (navigator.requestMIDIAccess){\n  navigator.requestMIDIAccess().then(a => {\n    for (const inp of a.inputs.values()){\n      inp.onmidimessage = m => {\n        const [st, d1, d2] = m.data;\n        const ch = st & 0x0F, cmd = st & 0xF0;\n        if (cmd === 0x90 && d2 > 0) playNote(d1, d2, ch);\n        else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) stopNote(d1, ch);\n      };\n    }\n    log('sys','MIDI input connected.');\n  }).catch(() => {});\n}\n"
 
-EMU_EXTRA_HEAD = '<style>\n  .keys{ display:flex; gap:3px; flex-wrap:wrap; padding:12px 13px; }\n  .key{\n    font-family:var(--mono); font-size:calc(10px * var(--ui-scale));\n    min-width:34px; padding:16px 6px 8px; text-align:center; cursor:pointer;\n    background:linear-gradient(180deg, var(--body-lit) 0%, var(--body) 100%);\n    border:2px solid var(--bezel); color:var(--text); user-select:none;\n  }\n  .key.sharp{ background:linear-gradient(180deg, var(--body-dark) 0%, var(--slot) 100%); color:var(--text-dim); }\n  .key.drum{ background:linear-gradient(180deg, var(--accent-dim) 0%, var(--slot) 100%); }\n  .key.down{ background:var(--accent); color:var(--on-accent); }\n  .key b{ display:block; font-family:var(--pixel); font-size:calc(7px * var(--ui-scale)); opacity:.7; margin-bottom:4px; }\n</style>\n<script>var Module = { onRuntimeInitialized: function(){ if (window.onCoreReady) window.onCoreReady(); } };</script>\n<script src="8b8.js"></script>'
+EMU_EXTRA_HEAD = '<script>var Module = { onRuntimeInitialized: function(){ if (window.onCoreReady) window.onCoreReady(); } };</script>\n<script src="8b8.js"></script>'
 
-EMU_EXTRA_BODY = '  <div class="section">\n    <div class="section-head">\n      <h2>Keyboard</h2><span class="scope">click or type</span>\n    </div>\n    <p class="section-blurb">Letter rows play pitched notes; the bottom row plays drums on channel 10. A real MIDI keyboard works too if your browser supports Web MIDI.</p>\n    <div class="module">\n      <h2>Play</h2>\n      <div class="keys" id="keys"></div>\n    </div>\n  </div>\n\n  <script>\n  (function(){\n    const rows = [\n      [[\'a\',\'C4\'],[\'w\',\'C#\'],[\'s\',\'D\'],[\'e\',\'D#\'],[\'d\',\'E\'],[\'f\',\'F\'],[\'t\',\'F#\'],\n       [\'g\',\'G\'],[\'y\',\'G#\'],[\'h\',\'A\'],[\'u\',\'A#\'],[\'j\',\'B\'],[\'k\',\'C5\'],[\'o\',\'C#\'],\n       [\'l\',\'D\'],[\'p\',\'D#\'],[\';\',\'E\']],\n      [[\'z\',\'Kick\'],[\'x\',\'Snare\'],[\'c\',\'HatC\'],[\'v\',\'HatO\'],[\'b\',\'Kick2\'],[\'n\',\'Tom\'],[\'m\',\'Crash\']]\n    ];\n    const host = document.getElementById(\'keys\');\n    rows.forEach((row, ri) => {\n      row.forEach(([k, label]) => {\n        const el = document.createElement(\'div\');\n        el.className = \'key\' + (label.includes(\'#\') ? \' sharp\' : \'\') + (ri ? \' drum\' : \'\');\n        el.dataset.key = k;\n        el.innerHTML = \'<b>\' + k.toUpperCase() + \'</b>\' + label;\n        host.appendChild(el);\n      });\n      if (!ri) host.appendChild(Object.assign(document.createElement(\'div\'), {style:\'flex-basis:100%;height:6px\'}));\n    });\n  })();\n  </script>'
+EMU_EXTRA_BODY = ''   # the Play section is shared now; nothing emulator-only here
 
 def emit_html(path, transport="serial", extra_head="", extra_body=""):
     presets_arrays = {name: preset_array(v) for name, v in PRESETS.items()}

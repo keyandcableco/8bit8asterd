@@ -9,8 +9,13 @@
 // clock / (16 * period), and the output toggles once per period, so a full
 // square cycle is two periods: stepping at clock/8 makes
 // clock/8 / (2 * period) == clock / (16 * period). Noise shifts every
-// 2*period steps and the envelope advances every 32*period, matching
-// clock/(16*NP) and clock/(256*EP). Output is box-filtered to the host rate.
+// 2*period steps, matching clock/(16*NP).
+//
+// The envelope advances one STEP every 2*period steps, giving a step rate of
+// clock/(16*EP) and so a complete 16-step cycle of clock/(256*EP) -- which is
+// what the datasheet's envelope frequency actually refers to. Treating that
+// figure as the step rate instead makes every envelope 16x too slow, which is
+// audible immediately on drums since they are the envelope-driven voices.
 #pragma once
 #include <stdint.h>
 #include <string.h>
@@ -66,8 +71,9 @@ public:
     // --- envelope -----------------------------------------------------
     uint16_t eper = (uint16_t)(regs[11] | (regs[12] << 8));
     if (eper == 0) eper = 1;
-    // Envelope advances at clock/(256*EP), i.e. every 32 steps of clock/8.
-    if (++envCount >= (uint32_t)eper * 32u) {
+    // One envelope step every 2*EP steps of clock/8, so the full 16-step
+    // cycle lands on the datasheet's clock/(256*EP).
+    if (++envCount >= (uint32_t)eper * 2u) {
       envCount = 0;
       if (!envHolding) {
         envStep++;
