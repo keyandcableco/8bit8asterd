@@ -1416,7 +1416,13 @@ static void noiseGateTick() {
 
 static uint8_t  warpPhase = 0;
 static uint16_t warpRamp = 0;        // slow sawtooth for the motion modes
-static uint8_t  warpMotionPhase = 0; // drives hands-free Rate sweeping
+// 16-bit, because an 8-bit phase wrapped in a fraction of a second: at the
+// useful Motion settings the rate was wobbling 4-10 times a second, which
+// averages out and sounds like nothing is happening. The whole point is a
+// slow hand on a fader, so the accumulator is wider and the step scaled to
+// give sweeps from about half a second up to half a minute.
+static uint16_t warpMotionPhase = 0;
+#define WARP_MOTION_SCALE 20
 
 static void warpTick() {
   uint8_t mode = params[P_WARP_MODE];
@@ -1801,8 +1807,8 @@ static void update100Hz() {
   // settings is usually more interesting than any fixed setting, so this
   // makes that movement continuous without a hand on the fader.
   if (params[P_WARP_MODE] != 0 && params[P_WARP_MOTION] > 0) {
-    warpMotionPhase += params[P_WARP_MOTION];
-    int8_t m = (int8_t)pgm_read_byte(&lfoSine[(warpMotionPhase >> 3) & 31]);
+    warpMotionPhase += (uint16_t)params[P_WARP_MOTION] * WARP_MOTION_SCALE;
+    int8_t m = (int8_t)pgm_read_byte(&lfoSine[(warpMotionPhase >> 11) & 31]);
     int r = (int)params[P_WARP_RATE] + (((int)m * (int)params[P_WARP_RATE]) / 160);
     if (r < 1) r = 1;
     if (r > 120) r = 120;

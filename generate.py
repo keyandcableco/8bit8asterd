@@ -574,6 +574,12 @@ HTML_TEMPLATE = r"""<!doctype html>
     color:var(--text-dim); margin-right:4px;
   }
   .bar .spacer{ flex:1 1 auto; }
+  .bar.settings{ border-top-width:0; }
+
+  /* Compact: drop the explanatory text once you know what things do. */
+  body.compact .ctl .help{ display:none; }
+  body.compact .section-blurb{ display:none; }
+  body.compact .ctl{ margin-bottom:10px; }
 
 
   /* ---- Play surface: chord matrix, strumpad, keyboard ---- */
@@ -839,7 +845,7 @@ __EXTRA_HEAD__
       <div class="brand">
         <div class="eyebrow">__BRAND__</div>
         <h1>8-BIT<br>8ASTERD <span>&#9632;</span></h1>
-        <p>Three AY-3-8910s under live control. Generated from generate.py &mdash; __NUM_PARAMS__ parameters over USB serial. SAVE writes them to the unit.</p>
+        <p>__INTRO__</p>
       </div>
       <div class="connection">
         <div class="status-pill" id="statusPill"><span class="dot"></span><span id="statusText">Disconnected</span></div>
@@ -861,6 +867,13 @@ __TRANSPORT_UI__
   </div>
 
   <div class="bar">
+    <button class="btn" id="settingsBtn">Settings</button>
+    <span class="spacer"></span>
+    <button class="btn" id="learnBtn">MIDI Learn</button>
+    <button class="btn" id="diagBtn">Diag</button>
+  </div>
+
+  <div class="bar settings" id="settingsPanel" hidden>
     <span class="label">Theme</span>
     <select id="themeSelect">
       <option value="nes">NES</option>
@@ -874,9 +887,11 @@ __TRANSPORT_UI__
       <option value="1.2">Large</option>
       <option value="1.45">Larger</option>
     </select>
-    <span class="spacer"></span>
-    <button class="btn" id="learnBtn">MIDI Learn</button>
-    <button class="btn" id="diagBtn">Diag</button>
+    <span class="label">Detail</span>
+    <select id="detailSelect">
+      <option value="full">Full</option>
+      <option value="compact">Compact</option>
+    </select>
   </div>
 
   <nav class="bar nav" id="nav"></nav>
@@ -1981,19 +1996,34 @@ function applyScale(v){
   document.documentElement.style.setProperty('--ui-scale', v);
   try { localStorage.setItem('8b8.scale', v); } catch(e){}
 }
+const settingsBtn = document.getElementById('settingsBtn');
+const settingsPanel = document.getElementById('settingsPanel');
+settingsBtn.onclick = () => {
+  settingsPanel.hidden = !settingsPanel.hidden;
+  settingsBtn.style.color = settingsPanel.hidden ? '' : 'var(--accent-lit)';
+};
+
+function applyDetail(v){
+  document.body.classList.toggle('compact', v === 'compact');
+  try { localStorage.setItem('8b8.detail', v); } catch(e){}
+}
+
 const themeSel = document.getElementById('themeSelect');
-const sizeSel  = document.getElementById('sizeSelect');
-themeSel.onchange = () => applyTheme(themeSel.value);
-sizeSel.onchange  = () => applyScale(sizeSel.value);
+const sizeSel   = document.getElementById('sizeSelect');
+const detailSel = document.getElementById('detailSelect');
+themeSel.onchange  = () => applyTheme(themeSel.value);
+sizeSel.onchange   = () => applyScale(sizeSel.value);
+detailSel.onchange = () => applyDetail(detailSel.value);
 
 (function restoreAppearance(){
-  let t = 'nes', v = '1';
+  let t = 'nes', v = '1', d = 'full';
   try {
     t = localStorage.getItem('8b8.theme') || t;
     v = localStorage.getItem('8b8.scale') || v;
+    d = localStorage.getItem('8b8.detail') || d;
   } catch(e){}
-  themeSel.value = t; sizeSel.value = v;
-  applyTheme(t); applyScale(v);
+  themeSel.value = t; sizeSel.value = v; detailSel.value = d;
+  applyTheme(t); applyScale(v); applyDetail(d);
 })();
 
 /* ==== Boot ============================================================== */
@@ -2080,6 +2110,11 @@ EMU_EXTRA_HEAD = '<script>var Module = { onRuntimeInitialized: function(){ if (w
 
 EMU_EXTRA_BODY = ''   # the Play section is shared now; nothing emulator-only here
 
+SERIAL_INTRO = 'A control surface for the 8-Bit 8asterd: nine voices of chiptune across three AY-3-8910 chips, with effects built out of what those chips do when you push them past their limits. Everything below edits the unit live over USB. <b>Save to Unit</b> writes the settings into its memory so it keeps them with no computer attached.'
+
+WASM_INTRO = 'The 8-Bit 8asterd, running in your browser. Nine voices of chiptune across three emulated AY-3-8910 chips, with effects built out of what those chips do when you push them past their limits &mdash; the crushing and glitching is the hardware straining, not something added on top. This runs the real firmware compiled to WebAssembly, the same code that is on the physical unit. Press <b>Start Audio</b>, then play it from the chord matrix, the keyboard, the sequencer or a game controller.'
+
+
 def brand_markup():
     """The header brand line, with the logo inlined if one is present.
 
@@ -2117,7 +2152,8 @@ def emit_html(path, transport="serial", extra_head="", extra_body=""):
             .replace("__TRANSPORT_UI__", tui)
             .replace("__EXTRA_HEAD__", extra_head)
             .replace("__EXTRA_BODY__", extra_body)
-            .replace("__BRAND__", brand_markup()))
+            .replace("__BRAND__", brand_markup())
+            .replace("__INTRO__", SERIAL_INTRO if transport == "serial" else WASM_INTRO))
     with open(path, "w") as f:
         f.write(html)
     print(f"wrote {path}  ({len(PRESETS)} presets)")
