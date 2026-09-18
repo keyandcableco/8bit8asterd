@@ -111,6 +111,7 @@ struct ToneParams {
 // the same array the web panel edits over serial and that presets are made
 // of. Edit generate.py, re-run it, reflash; never edit parameters.h by hand.
 #include "parameters.h"
+#include "temperaments.h"
 #include <EEPROM.h>
 
 static uint8_t params[NUM_PARAMS];
@@ -587,6 +588,32 @@ public:
     m_noteIdx = (uint8_t)n;
     m_target = pgm_read_word(&note_table[n]);
 
+    // Historical temperament. The table gives cents from equal for each
+    // pitch class; rotating by the root moves which key is sweet, and
+    // subtracting the root's own offset leaves the root exactly in tune so
+    // changing temperament never shifts the instrument's reference pitch.
+    // (The minichord anchors A instead, because its master tuning is set
+    // from A; here a root control is the more useful anchor.)
+    //
+    // A tone period is a DIVISOR, so a sharper note needs a SMALLER one --
+    // the factor table already carries that inversion. Integer multiply
+    // with rounding, no floating point anywhere.
+    uint8_t temper = params[P_TEMPERAMENT];
+    if (temper > 0 && temper < NUM_TEMPERAMENTS) {
+      uint8_t root = params[P_TEMPER_ROOT];
+      uint8_t pc   = (uint8_t)((((MIDI_MIN + n) % 12) + 12 - root) % 12);
+      int8_t  c    = (int8_t)pgm_read_byte(&temperCents[temper][pc]);
+      int8_t  c0   = (int8_t)pgm_read_byte(&temperCents[temper][0]);
+      int     off  = (int)c - (int)c0;
+      if (off < -TEMPER_CENT_SPAN) off = -TEMPER_CENT_SPAN;
+      if (off >  TEMPER_CENT_SPAN) off =  TEMPER_CENT_SPAN;
+      uint16_t factor = pgm_read_word(&temperFactor[off + TEMPER_CENT_SPAN]);
+      uint32_t d = (((uint32_t)m_target * factor) + 16384UL) >> 15;
+      if (d < 1) d = 1;
+      if (d > 4095) d = 4095;
+      m_target = (ushort)d;
+    }
+
     // Glide: start from wherever the previous note's pitch was and slew
     // toward the target in update100Hz(). 0 = jump straight there.
     if (params[P_GLIDE] > 0 && g_lastMelodicPitch > 0) {
@@ -969,6 +996,16 @@ static bool startNote(ushort idx) {
 // Applies the global Drums controls to one drum's parameters. Works on the
 // RAM copy pulled out of PROGMEM, so the built-in kit table is untouched and
 // the modifiers reshape every drum consistently.
+// Shared by Drum FX Chaos and by the Warp Zone Scramble mode.
+static uint16_t warpRngState = 0xACE1;
+
+static uint8_t warpRand() {
+  warpRngState ^= warpRngState << 7;
+  warpRngState ^= warpRngState >> 9;
+  warpRngState ^= warpRngState << 8;
+  return (uint8_t)warpRngState;
+}
+
 static void applyDrumMods(FXParams &f) {
   uint8_t tune = params[P_DRUM_TUNE];              // 50..200 %
   uint8_t len  = params[P_DRUM_DECAY];             // 50..200 %
@@ -1008,7 +1045,48 @@ static void applyDrumMods(FXParams &f) {
     if (v > 15) v = 15;
     f.noisefreq = (ushort)v;
   }
+
+  // Reverse: AY shape 13 ramps UP and holds, so the hit swells instead of
+  // decaying; the voice's own amplitude timer then cuts it off. Shape 9,
+  // which every kit entry uses, is the ordinary single decay.
+  if (params[P_DRUM_REVERSE]) {
+    f.shape = 13;
+  }
+
+  // Chaos: vary this strike. Drum machines are identical every hit; real
+  // kits are not. Pitch up to +/-50%, noise a few shades either way, length
+  // up to +/-25%, all scaled by the control.
+  uint8_t chaos = params[P_DRUM_CHAOS];
+  if (chaos) {
+    int8_t r1 = (int8_t)(warpRand() & 0x3F) - 32;   // -32..+31
+    int8_t r2 = (int8_t)(warpRand() & 0x0F) - 8;
+    int8_t r3 = (int8_t)(warpRand() & 0x3F) - 32;
+
+    if (f.tonefreq > 0) {
+      int32_t d = ((int32_t)f.tonefreq * r1 * chaos) / 4032;
+      int32_t np = (int32_t)f.tonefreq + d;
+      if (np < 1) np = 1;
+      if (np > 4095) np = 4095;
+      f.tonefreq = (ushort)np;
+    }
+    if (f.noisefreq < 16) {
+      int v = (int)f.noisefreq + ((int)r2 * chaos) / 126;
+      if (v < 0) v = 0;
+      if (v > 15) v = 15;
+      f.noisefreq = (ushort)v;
+    }
+    int32_t t = (int32_t)f.timer + ((int32_t)f.timer * r3 * chaos) / 8064;
+    if (t < 1) t = 1;
+    if (t > 65535) t = 65535;
+    f.timer = (ushort)t;
+  }
 }
+
+// Flam: one pending repeat is enough -- a second hit landing before the
+// first flam fires just replaces it, which is what a drummer does anyway.
+static note_t  flamNote  = 0;
+static uint8_t flamTicks = 0;
+static bool    flamFiring = false;   // stops a flam from scheduling a flam
 
 static bool startPercussion(note_t note) {
   if (note < PERC_MIN || note > PERC_MAX) return false;
@@ -1023,6 +1101,11 @@ static bool startPercussion(note_t note) {
   applyDrumMods(fxp);
   voices[v].startFX(fxp);
   m_playing[v] = PERC_NOTE;
+
+  if (params[P_DRUM_FLAM] > 0 && !flamFiring) {
+    flamNote  = note;
+    flamTicks = params[P_DRUM_FLAM];
+  }
   return true;
 }
     
@@ -1265,14 +1348,6 @@ static const int8_t arpTable[6][3] PROGMEM = {
 static uint8_t arpStep = 0;
 static uint8_t arpTickCount = 0;
 
-static uint16_t warpRngState = 0xACE1;
-
-static uint8_t warpRand() {
-  warpRngState ^= warpRngState << 7;
-  warpRngState ^= warpRngState >> 9;
-  warpRngState ^= warpRngState << 8;
-  return (uint8_t)warpRngState;
-}
 
 // Registers the Scramble mode is allowed to hit: tone periods, noise
 // period, amplitudes and the envelope. Never R14/R15.
@@ -1285,7 +1360,31 @@ static const uint8_t warpVictims[] PROGMEM = {
 };
 static const uint8_t N_WARP_VICTIMS = sizeof(warpVictims);
 
-static uint8_t warpPhase = 0;
+// Master noise gate. The AY has no noise level: tone and noise share one
+// amplitude register per channel. What it does have is a per-channel
+// noise-ENABLE bit, so switching that on and off faster than the ear
+// resolves trades duty cycle for level. The duty is randomised rather than
+// periodic -- a regular gate at a few kHz parks a whine right in the
+// spectrum, while a random one spreads the artefact across it, which on a
+// noise source is inaudible.
+static const uint32_t NOISE_GATE_US = 250;   // 4kHz
+static unsigned long lastNoiseUs = 0;
+
+static void noiseGateTick() {
+  uint8_t lvl = params[P_MIX_NOISE];
+  if (lvl >= 15) return;                     // fully open: nothing to do
+  bool on = lvl > 0 && ((warpRand() % 15) < lvl);
+  for (uint8_t c = 0; c < 3; c++) {
+    uint8_t m = psg.regs[c][PSGRegs::MIXER];
+    // bits 3-5 are the noise-enable bits, active low. Setting them mutes
+    // noise on all three channels; bits 6-7 (I/O direction) stay untouched.
+    writeReg(c, PSGRegs::MIXER, on ? m : (uint8_t)(m | 0x38));
+  }
+}
+
+static uint8_t  warpPhase = 0;
+static uint16_t warpRamp = 0;        // slow sawtooth for the motion modes
+static uint8_t  warpMotionPhase = 0; // drives hands-free Rate sweeping
 
 static void warpTick() {
   uint8_t mode = params[P_WARP_MODE];
@@ -1293,6 +1392,7 @@ static void warpTick() {
 
   uint8_t depth = params[P_WARP_DEPTH];
   warpPhase++;
+  warpRamp++;
 
   switch (mode) {
 
@@ -1339,6 +1439,70 @@ static void warpTick() {
           val &= 0x1F;               // keep amplitude in range, allow M bit
         }
         writeReg(c, reg, val);
+      }
+      break;
+    }
+
+    case 5: { // Tape Stop -- stretch every tone period further and further,
+              // so pitch sags to a halt, then snaps back. The drag is the
+              // whole point; where it lands is nothing.
+      uint16_t stretch = 256 + (uint16_t)(((uint32_t)(warpRamp & 0x3FF) * depth) >> 6);
+      uint8_t c = warpPhase % 3;      // one chip per tick, to bound CPU
+      for (uint8_t sub = 0; sub < 3; sub++) {
+        uint8_t lo = PSGRegs::TONEALOW + (sub << 1);
+        uint16_t per = psg.regs[c][lo] | ((uint16_t)psg.regs[c][lo + 1] << 8);
+        if (!per) continue;
+        uint32_t np = ((uint32_t)per * stretch) >> 8;
+        if (np > 4095) np = 4095;
+        writeReg(c, lo, np & 0xFF);
+        writeReg(c, lo + 1, np >> 8);
+      }
+      break;
+    }
+
+    case 6: { // Siren -- sweep every tone period up and down continuously.
+      uint8_t t = warpRamp & 0x7F;
+      if (t > 63) t = 127 - t;                    // triangle 0..63..0
+      uint16_t mul = 256 + (uint16_t)(((uint16_t)t * depth) >> 3);
+      uint8_t c = warpPhase % 3;
+      for (uint8_t sub = 0; sub < 3; sub++) {
+        uint8_t lo = PSGRegs::TONEALOW + (sub << 1);
+        uint16_t per = psg.regs[c][lo] | ((uint16_t)psg.regs[c][lo + 1] << 8);
+        if (!per) continue;
+        uint32_t np = ((uint32_t)per * mul) >> 8;
+        if (np > 4095) np = 4095;
+        writeReg(c, lo, np & 0xFF);
+        writeReg(c, lo + 1, np >> 8);
+      }
+      break;
+    }
+
+    case 7: { // Crush -- mask off progressively more of the tone period's
+              // low bits, so pitch quantises to a coarser and coarser grid.
+              // Sounds like the resolution itself is failing.
+      uint8_t bits = (uint8_t)(((uint16_t)(warpRamp & 0xFF) * depth) >> 11);
+      if (bits > 7) bits = 7;
+      uint8_t mask = (uint8_t)(0xFF << bits);
+      uint8_t c = warpPhase % 3;
+      for (uint8_t sub = 0; sub < 3; sub++) {
+        uint8_t lo = PSGRegs::TONEALOW + (sub << 1);
+        uint8_t v = psg.regs[c][lo] & mask;
+        writeReg(c, lo, v);
+      }
+      break;
+    }
+
+    case 8: { // Ring -- flip each channel's amplitude between its real value
+              // and a cut one at audio rate. That is amplitude modulation,
+              // and it gives the metallic ring-mod clang the AY has no
+              // hardware for.
+      uint8_t c = warpPhase % 3;
+      bool low = (warpPhase & 1);
+      for (uint8_t sub = 0; sub < 3; sub++) {
+        uint8_t a = psg.regs[c][PSGRegs::TONEAAMPL + sub];
+        if (a & 0x10) continue;            // envelope-driven: leave alone
+        uint8_t v = low ? (uint8_t)((a * (uint16_t)(63 - depth)) / 63) : a;
+        writeReg(c, PSGRegs::TONEAAMPL + sub, v & 0x0F);
       }
       break;
     }
@@ -1501,6 +1665,43 @@ static void update100Hz() {
     tremCut = (uint8_t)(((s + 127) * params[P_TREM_DEPTH]) >> 8); // 0..depth
   }
 
+  // Flam: fire the pending repeat when its delay runs out.
+  if (flamTicks > 0) {
+    if (--flamTicks == 0) {
+      flamFiring = true;
+      startPercussion(flamNote);
+      flamFiring = false;
+    }
+  }
+
+  // Roll: re-strike the envelope of any drum still ringing. Writing the
+  // shape register restarts the AY envelope from the top, which is the
+  // whole trick -- at low rates it reads as a flam, at high rates a buzz
+  // roll. Only percussion is envelope-driven, so nothing else is touched.
+  if (params[P_DRUM_ROLL] > 0) {
+    uint8_t every = 100 / params[P_DRUM_ROLL];
+    if (every == 0) every = 1;
+    for (uint8_t i = 0; i < MAX_VOICES; i++) {
+      if (m_playing[i] != PERC_NOTE || !voices[i].isPlaying()) continue;
+      if (voices[i].m_age == 0 || (voices[i].m_age % every) != 0) continue;
+      voices[i].m_ampl = Voice::AMPL_MAX;          // restart the cut-off timer
+      writeReg(i % 3, PSGRegs::ENVSHAPE, (uint8_t)voices[i].m_shape);
+    }
+  }
+
+  // Warp Motion: sweep the warp Rate on its own. The movement between
+  // settings is usually more interesting than any fixed setting, so this
+  // makes that movement continuous without a hand on the fader.
+  if (params[P_WARP_MODE] != 0 && params[P_WARP_MOTION] > 0) {
+    warpMotionPhase += params[P_WARP_MOTION];
+    int8_t m = (int8_t)pgm_read_byte(&lfoSine[(warpMotionPhase >> 3) & 31]);
+    int r = (int)params[P_WARP_RATE] + (((int)m * (int)params[P_WARP_RATE]) / 160);
+    if (r < 1) r = 1;
+    if (r > 120) r = 120;
+    warpIntervalUs = 30000UL / (uint32_t)r;
+    if (warpIntervalUs < 250UL) warpIntervalUs = 250UL;
+  }
+
   // Arpeggio steps on a divided-down count of this 100Hz tick.
   if (params[P_ARP_MODE] > 0) {
     uint8_t ticksPerStep = 100 / params[P_ARP_RATE];
@@ -1516,6 +1717,17 @@ static void update100Hz() {
 
   for (ushort i = 0; i < MAX_VOICES; i++) {
     voices[i].update100Hz();
+
+    // Master drum level. Percussion normally runs on the chip's hardware
+    // envelope (M bit set), whose full scale cannot be scaled -- so to get a
+    // level at all the voice is moved onto its own software amplitude.
+    // Slightly softer transient, which is why 15 leaves it alone entirely.
+    if (params[P_MIX_DRUM] < 15 && m_playing[i] == PERC_NOTE && voices[i].isPlaying()) {
+      int da = ((voices[i].m_ampl >> 6) * params[P_MIX_DRUM]) / 15;
+      if (da < 0) da = 0;
+      if (da > 15) da = 15;
+      psg.regs[i % 3][PSGRegs::TONEAAMPL + (i / 3)] = (uint8_t)da;  // M clear
+    }
 
     if (m_playing[i] == PERC_NOTE && ! (voices[i].isPlaying())) {
       m_playing[i] = NO_NOTE;
@@ -1580,6 +1792,7 @@ static void update100Hz() {
 
       int a = (voices[i].m_ampl >> 6) - tremCut;
       if (a < 0) a = 0;
+      if (params[P_MIX_TONE] < 15) a = (a * params[P_MIX_TONE]) / 15;
 
       // Noise blend: mixes the AY noise generator into the voice. NOTE:
       // the noise period register is per-chip and shared with percussion
@@ -1768,9 +1981,19 @@ void loop() {
   // Warp Zone runs far faster than the 100Hz voice tick -- up to ~4kHz --
   // so it gets its own micros() timer. Unsigned subtraction handles the
   // ~70 minute micros() rollover correctly.
-  if (params[P_WARP_MODE] != 0) {
+  if (params[P_WARP_MODE] != 0 || params[P_MIX_NOISE] < 15) {
     unsigned long nowUs = micros();
-    if ((unsigned long)(nowUs - lastWarpUs) >= warpIntervalUs) {
+
+    // The noise gate keeps its own fixed 4kHz clock: tying it to the warp
+    // rate would turn a slow warp setting into audible noise chopping.
+    if (params[P_MIX_NOISE] < 15 &&
+        (unsigned long)(nowUs - lastNoiseUs) >= NOISE_GATE_US) {
+      lastNoiseUs = nowUs;
+      noiseGateTick();
+    }
+
+    if (params[P_WARP_MODE] != 0 &&
+        (unsigned long)(nowUs - lastWarpUs) >= warpIntervalUs) {
       lastWarpUs = nowUs;
       warpTick();
     }

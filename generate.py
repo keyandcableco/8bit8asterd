@@ -63,11 +63,14 @@ PARAMS = [
     # These write STRAIGHT to the chip, bypassing the register cache, so the
     # normal voice updates keep fighting them -- that fight is the sound.
     dict(key="warp_mode", label="Mode", group="Warp Zone", kind="enum",
-         options=["Off", "Sync Buzz", "Stutter", "Scramble", "Zap"],
+         options=["Off", "Sync Buzz", "Stutter", "Scramble", "Zap",
+                  "Tape Stop", "Siren", "Crush", "Ring"],
          default=0,
-         help="Sync Buzz restarts the envelope (hard-sync). Stutter gates "
-              "the mixer. Scramble throws junk at random registers. Zap "
-              "sweeps the noise period."),
+         help="Sync Buzz restarts the envelope. Stutter gates the mixer. "
+              "Scramble throws junk at registers. Zap sweeps noise. The "
+              "last four move on their own: Tape Stop drags pitch down and "
+              "snaps back, Siren sweeps it, Crush quantises it coarser and "
+              "coarser, Ring is audio-rate amplitude modulation."),
     dict(key="warp_rate", label="Rate", group="Warp Zone", kind="int",
          min=1, max=120, default=30,
          help="Low = slow chopping. High reaches audio rate and becomes a "
@@ -75,6 +78,11 @@ PARAMS = [
     dict(key="warp_depth", label="Depth", group="Warp Zone", kind="int",
          min=1, max=63, default=20,
          help="How violent the effect is."),
+    dict(key="warp_motion", label="Motion", group="Warp Zone", kind="int",
+         min=0, max=64, default=0,
+         help="Sweeps Rate up and down on its own, hands free. The sweep "
+              "itself is usually the interesting part, not where it "
+              "settles. 0 = Rate stays put."),
 
     # --- Vibrato -----------------------------------------------------------
     dict(key="vib_enable", label="Enable", group="Vibrato", kind="toggle",
@@ -126,6 +134,26 @@ PARAMS = [
          min=0, max=14, default=7, offset=-7,
          help="Noise colour. Negative = brighter/hissier, positive = darker."),
 
+    # --- Drum FX -----------------------------------------------------------
+    # Drums are the only voices driven by the AY envelope generator, so
+    # these reach things the tone effects cannot: restarting the envelope
+    # mid-hit, running it backwards, and varying it per strike.
+    dict(key="drum_roll", label="Roll", group="Drum FX", kind="int",
+         min=0, max=50, default=0, unit="Hz",
+         help="Re-strikes the envelope while a drum is still ringing. Low "
+              "values flam, high values become a buzz roll. 0 = off."),
+    dict(key="drum_flam", label="Flam", group="Drum FX", kind="int",
+         min=0, max=30, default=0, scale=10, unit="ms",
+         help="Every hit fires a second time this long after. 0 = off."),
+    dict(key="drum_reverse", label="Reverse", group="Drum FX", kind="toggle",
+         default=0,
+         help="Runs the envelope upward so drums swell instead of decay, "
+              "then cut. Reverse-cymbal territory."),
+    dict(key="drum_chaos", label="Chaos", group="Drum FX", kind="int",
+         min=0, max=63, default=0,
+         help="Randomises pitch, noise colour and length on every single "
+              "hit, so no two strikes are identical."),
+
     # --- Auto FX (NES tracker style, automatic per note) -------------------
     # The 2A03's sweep unit did pitch slides in hardware; its chord and
     # retrigger sounds came from the tracker re-writing registers every
@@ -170,6 +198,37 @@ PARAMS = [
     dict(key="transpose", label="Transpose", group="Pitch & Response", kind="int",
          min=0, max=48, default=24, offset=-24, unit="st",
          help=""),
+    # --- Master Mixer ------------------------------------------------------
+    dict(key="mix_noise", label="Noise", group="Mixer", kind="int",
+         min=0, max=15, default=15,
+         help="Master noise level. The chip has no noise fader -- tone and "
+              "noise share one amplitude -- so this gates the noise on and "
+              "off a few thousand times a second with a random duty. Random "
+              "rather than regular keeps the artefact broadband, so it reads "
+              "as quieter noise instead of a whine. 15 = untouched."),
+    dict(key="mix_tone", label="Tone", group="Mixer", kind="int",
+         min=0, max=15, default=15,
+         help="Master level for the pitched voices. Drums are unaffected."),
+    dict(key="mix_drum", label="Drums", group="Mixer", kind="int",
+         min=0, max=15, default=15,
+         help="Master drum level. Below 15 this moves drums off the chip's "
+              "hardware envelope onto a software one so the level can be "
+              "scaled at all, which softens the transient slightly. "
+              "15 leaves them on the hardware envelope, untouched."),
+
+    dict(key="temperament", label="Temperament", group="Tuning", kind="enum",
+         options=["Equal", "Meantone", "Just", "Pythag", "Werck III",
+                  "Kirn III", "Vallotti", "Young", "Kellner", "1/6 Mean"],
+         default=0,
+         help="Historical tunings. Audible in the lower octaves; above about "
+              "MIDI 72 the AY's integer divisor is too coarse to render the "
+              "offsets and they round away."),
+    dict(key="temper_root", label="Root", group="Tuning", kind="enum",
+         options=["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"],
+         default=0,
+         help="Which key the temperament is centred on. The root itself is "
+              "exactly in tune; everything else is tempered around it."),
+
     dict(key="vel_sense", label="Velocity", group="Pitch & Response", kind="toggle",
          default=1,
          help="Off = every note plays at full volume."),
@@ -200,6 +259,20 @@ PRESETS = {
                         buzz_enable=1, buzz_ratio=3, buzz_detune=36),
     "Broken Cabinet": dict(warp_mode=3, warp_rate=22, warp_depth=55,
                            noise_enable=1, noise_period=6),
+    "Tape Eaten": dict(warp_mode=5, warp_rate=70, warp_depth=34,
+                       warp_motion=12),
+    "Air Raid": dict(warp_mode=6, warp_rate=60, warp_depth=44,
+                     warp_motion=20),
+    "Dying Console": dict(warp_mode=7, warp_rate=48, warp_depth=40,
+                          warp_motion=9, noise_enable=1, noise_period=9),
+    "Ring Zone": dict(warp_mode=8, warp_rate=105, warp_depth=30,
+                      warp_motion=26, buzz_enable=1, buzz_ratio=2),
+    "Buzz Roll": dict(drum_roll=32, drum_decay=70, drum_chaos=10),
+    "Drunk Drummer": dict(drum_flam=7, drum_chaos=38, drum_tune=92,
+                          drum_decay=120),
+    "Reverse Kit": dict(drum_reverse=1, drum_decay=150, drum_bend=40),
+    "Broken Machine": dict(drum_roll=44, drum_chaos=58, drum_noise=4,
+                           drum_decay=55, drum_bend=170),
     "1-Up Arp": dict(arp_mode=1, arp_rate=20, env_mode=1, env_attack=1,
                      env_decay=6, env_sustain=26, env_release=8),
     "Laser Jump": dict(sweep_amount=52, env_mode=1, env_attack=1,
@@ -208,6 +281,37 @@ PRESETS = {
                         env_mode=1, env_attack=1, env_decay=14,
                         env_sustain=10, env_release=6),
 }
+
+# ---------------------------------------------------------------------------
+# Panel sections
+# ---------------------------------------------------------------------------
+# Tones and drums are different voices sharing the same three chips, and the
+# FX reach across both. The panel says so out loud rather than leaving it to
+# be discovered: each band is labelled with what it touches, and the Warp
+# Zone sits across the bottom spanning both because it hits them differently.
+
+SECTIONS = [
+    dict(key="mix", title="Master Mixer", scope="everything out",
+         blurb="Output levels. Tone and noise share one amplitude register "
+               "per channel on this chip, so noise is thinned by gating "
+               "rather than by a level control that does not exist.",
+         groups=["Mixer"]),
+    dict(key="tone", title="Tone Voices", scope="pitched voices",
+         blurb="The melodic side. Nothing here touches the drum channel.",
+         groups=["Envelope", "Tuning", "Pitch & Response", "Buzzy Bass",
+                 "Vibrato", "Tremolo", "Noise Blend", "Auto FX"]),
+    dict(key="drum", title="Drum Voices", scope="MIDI channel 10",
+         blurb="Percussion only. Drums are the voices driven by each chip's "
+               "envelope generator, which is why the FX bite them hardest.",
+         groups=["Drums", "Drum FX"]),
+    dict(key="warp", title="Warp Zone", scope="tones + drums",
+         blurb="The bent stuff, and the only section that reaches both. It "
+               "writes straight to the chips while the voices keep writing "
+               "their own values, so the two fight \u2014 and because drums "
+               "run on the envelope generator and tones do not, the same "
+               "setting lands very differently on each.",
+         groups=["Warp Zone"]),
+]
 
 # ---------------------------------------------------------------------------
 # Normalise + validate
@@ -229,6 +333,15 @@ def normalise():
                 sys.exit(f"ERROR: {p['key']}.{field}={v} does not fit uint8_t")
         if not (p["min"] <= p["default"] <= p["max"]):
             sys.exit(f"ERROR: {p['key']} default outside range")
+
+    placed = {g for sec in SECTIONS for g in sec["groups"]}
+    actual = {p["group"] for p in PARAMS}
+    missing = actual - placed
+    extra = placed - actual
+    if missing:
+        sys.exit(f"ERROR: parameter groups with no panel section: {sorted(missing)}")
+    if extra:
+        sys.exit(f"ERROR: SECTIONS lists groups that do not exist: {sorted(extra)}")
 
     keys = [p["key"] for p in PARAMS]
     if len(set(keys)) != len(keys):
@@ -307,148 +420,180 @@ HTML_TEMPLATE = r"""<!doctype html>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
-  /* ---- NES front-loader palette -------------------------------------
-     The console body was two greys over a near-black slot, with the red
-     stripe as the only colour. Everything here is drawn from that: hard
-     edges, chunky plastic bevels, red used sparingly so it still reads
-     as an accent and not decoration. ------------------------------- */
+  /* ---- Themes --------------------------------------------------------
+     Three cabinets, one layout. Every colour is a variable so a theme is
+     just a different set of them; --ui-scale multiplies every type size so
+     the whole panel can be sized without reflowing anything. ---------- */
+
   :root{
-    --slot:      #0b0b0c;   /* the cartridge slot: near black        */
-    --body-dark: #2e2f31;   /* lower console body grey               */
-    --body:      #3c3d40;   /* main body grey                        */
-    --body-lit:  #5a5c60;   /* top bevel highlight                   */
-    --bezel:     #17181a;
-    --red:       #c8322b;   /* the stripe                            */
-    --red-lit:   #e8483f;
-    --red-dim:   #6d1f1b;
-    --text:      #dedbd2;   /* light grey plastic                    */
-    --text-dim:  #8c8d90;
-    --green:     #7bbf5a;   /* power LED                             */
-    --pixel:     'Press Start 2P', monospace;
-    --mono:      'JetBrains Mono', ui-monospace, monospace;
+    --ui-scale: 1;
+    --pixel:'Press Start 2P', monospace;
+    --mono:'JetBrains Mono', ui-monospace, monospace;
+    --glow: none;
+    --body-bg: var(--slot);
+  }
+
+  /* NES front-loader: two greys over a near-black slot, red as the only colour */
+  :root, [data-theme="nes"]{
+    --slot:#0b0b0c; --body-dark:#2e2f31; --body:#3c3d40; --body-lit:#5a5c60;
+    --bezel:#17181a; --accent:#c8322b; --accent-lit:#e8483f; --accent-dim:#6d1f1b;
+    --text:#dedbd2; --text-dim:#8c8d90; --ok:#7bbf5a; --warn:#d8c98a;
+    --on-accent:#ffffff;
+    --body-bg:
+      repeating-linear-gradient(0deg, rgba(255,255,255,.012) 0 2px, transparent 2px 4px),
+      #0b0b0c;
+  }
+
+  /* Arcade cabinet: black glass, CRT scanlines, neon on the marquee */
+  [data-theme="arcade"]{
+    --slot:#05060a; --body-dark:#0d1030; --body:#151a44; --body-lit:#2b3480;
+    --bezel:#000208; --accent:#ff2e88; --accent-lit:#ff6ab0; --accent-dim:#6b0f38;
+    --text:#e8f4ff; --text-dim:#7f93c4; --ok:#3dffc0; --warn:#ffd400;
+    --on-accent:#0a0010;
+    --glow: 0 0 6px currentColor;
+    --body-bg:
+      repeating-linear-gradient(0deg, rgba(0,0,0,.55) 0 1px, transparent 1px 3px),
+      radial-gradient(ellipse at 50% 0%, #1b2160 0%, #05060a 62%),
+      #05060a;
+  }
+
+  /* Handheld: four shades of green and nothing else */
+  [data-theme="handheld"]{
+    --slot:#0b1a06; --body-dark:#1d3312; --body:#2b4a1a; --body-lit:#456b2a;
+    --bezel:#050d03; --accent:#9bbc0f; --accent-lit:#c6de8c; --accent-dim:#4a5c11;
+    --text:#c6de8c; --text-dim:#6b8a3a; --ok:#9bbc0f; --warn:#c6de8c;
+    --on-accent:#0b1a06;
+    --body-bg:
+      repeating-linear-gradient(0deg, rgba(0,0,0,.10) 0 2px, transparent 2px 4px),
+      #0b1a06;
   }
 
   *{ box-sizing:border-box; }
   html,body{ margin:0; padding:0; }
   body{
-    background:
-      repeating-linear-gradient(0deg,
-        rgba(255,255,255,.012) 0 2px, transparent 2px 4px),
-      var(--slot);
-    color:var(--text);
-    font-family:var(--mono);
-    min-height:100vh;
-    padding:26px 14px 56px;
-    display:flex;
-    justify-content:center;
+    background: var(--body-bg);
+    color:var(--text); font-family:var(--mono);
+    min-height:100vh; padding:26px 14px 56px;
+    display:flex; justify-content:center;
   }
-  .rack{ width:100%; max-width:1000px; }
+  .rack{ width:100%; max-width:1080px; }
 
-  /* Hard plastic bevel: light on top, dark underneath. No radius --
-     the NES had almost none. */
-  .bevel{
-    border:2px solid var(--bezel);
-    box-shadow:
-      inset 0 2px 0 var(--body-lit),
-      inset 0 -2px 0 rgba(0,0,0,.55);
-  }
-
-  /* ---- Header: the console face ---- */
+  /* ---- Header ---- */
   header{
     background:linear-gradient(180deg, var(--body) 0%, var(--body-dark) 100%);
     border:2px solid var(--bezel);
-    box-shadow:
-      inset 0 2px 0 var(--body-lit),
-      inset 0 -2px 0 rgba(0,0,0,.55);
-    padding:0;
-    margin-bottom:16px;
-    overflow:hidden;
+    box-shadow: inset 0 2px 0 var(--body-lit), inset 0 -2px 0 rgba(0,0,0,.55);
+    padding:0; margin-bottom:14px; overflow:hidden;
   }
-  /* the stripe */
   .stripe{ display:flex; height:9px; }
-  .stripe i{ flex:1; }
-  .stripe i:nth-child(1){ background:var(--red); }
-  .stripe i:nth-child(2){ background:var(--body-dark); flex:0 0 26px; }
-  .stripe i:nth-child(3){ background:var(--red); }
-  .stripe i:nth-child(4){ background:var(--body-dark); flex:0 0 26px; }
-  .stripe i:nth-child(5){ background:var(--red); }
+  .stripe i{ flex:1; background:var(--accent); }
+  .stripe i:nth-child(even){ background:var(--body-dark); flex:0 0 26px; }
+  [data-theme="arcade"] .stripe i{ background:var(--accent); }
+  [data-theme="arcade"] .stripe i:nth-child(2){ background:#00e5ff; flex:1; }
+  [data-theme="arcade"] .stripe i:nth-child(4){ background:var(--warn); flex:1; }
 
   .head-inner{
     display:flex; align-items:flex-end; justify-content:space-between;
     gap:16px; flex-wrap:wrap; padding:16px 18px 18px;
   }
   .brand .eyebrow{
-    font-family:var(--pixel); font-size:7px; letter-spacing:.12em;
-    color:var(--text-dim); margin-bottom:9px;
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    letter-spacing:.12em; color:var(--text-dim); margin-bottom:9px;
   }
   .brand h1{
-    font-family:var(--pixel); font-size:19px; margin:0; line-height:1.35;
-    color:var(--text); text-shadow:2px 2px 0 rgba(0,0,0,.65);
+    font-family:var(--pixel); font-size:calc(19px * var(--ui-scale));
+    margin:0; line-height:1.35; color:var(--text);
+    text-shadow:2px 2px 0 rgba(0,0,0,.65);
   }
-  .brand h1 span{ color:var(--red-lit); }
-  .brand p{ margin:10px 0 0; color:var(--text-dim); font-size:12px; max-width:50ch; line-height:1.55; }
+  .brand h1 span{ color:var(--accent-lit); text-shadow:var(--glow); }
+  .brand p{
+    margin:10px 0 0; color:var(--text-dim);
+    font-size:calc(12px * var(--ui-scale)); max-width:52ch; line-height:1.55;
+  }
 
   .connection{ display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
   .status-pill{
-    display:flex; align-items:center; gap:7px;
-    font-family:var(--pixel); font-size:7px; letter-spacing:.06em;
+    display:flex; align-items:center; gap:7px; font-family:var(--pixel);
+    font-size:calc(7px * var(--ui-scale)); letter-spacing:.06em;
     padding:9px 11px; background:var(--slot);
     border:2px solid var(--bezel); color:var(--text-dim);
   }
-  .status-pill .dot{ width:7px; height:7px; background:#4a4b4d; }
-  .status-pill.on{ color:var(--green); }
-  .status-pill.on .dot{ background:var(--green); box-shadow:0 0 7px var(--green); }
-  .status-pill.err{ color:var(--red-lit); }
-  .status-pill.err .dot{ background:var(--red-lit); box-shadow:0 0 7px var(--red); }
+  .status-pill .dot{ width:7px; height:7px; background:var(--text-dim); }
+  .status-pill.on{ color:var(--ok); }
+  .status-pill.on .dot{ background:var(--ok); box-shadow:0 0 7px var(--ok); }
+  .status-pill.err{ color:var(--accent-lit); }
+  .status-pill.err .dot{ background:var(--accent-lit); box-shadow:0 0 7px var(--accent); }
 
-  /* ---- Buttons: console plastic ---- */
   button.btn{
-    font-family:var(--pixel); font-size:7px; letter-spacing:.04em;
-    color:var(--text); cursor:pointer; padding:10px 12px;
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    letter-spacing:.04em; color:var(--text); cursor:pointer; padding:10px 12px;
     background:linear-gradient(180deg, var(--body) 0%, var(--body-dark) 100%);
     border:2px solid var(--bezel);
     box-shadow: inset 0 2px 0 var(--body-lit), inset 0 -2px 0 rgba(0,0,0,.5);
   }
-  button.btn:hover{ color:var(--red-lit); }
-  button.btn:active{
-    box-shadow: inset 0 2px 4px rgba(0,0,0,.7);
-    transform:translateY(1px);
-  }
+  button.btn:hover{ color:var(--accent-lit); text-shadow:var(--glow); }
+  button.btn:active{ box-shadow: inset 0 2px 4px rgba(0,0,0,.7); transform:translateY(1px); }
   button.btn:disabled{ opacity:.35; cursor:not-allowed; }
   button.btn:focus-visible, .switch:focus-visible, .enum-btn:focus-visible{
-    outline:2px solid var(--red-lit); outline-offset:2px;
+    outline:2px solid var(--accent-lit); outline-offset:2px;
+  }
+
+  select{
+    font-family:var(--mono); font-size:calc(12px * var(--ui-scale));
+    font-weight:500; background:var(--slot); color:var(--text);
+    border:2px solid var(--bezel); padding:9px;
   }
 
   .unsupported, .mismatch{
-    background:var(--body-dark); border:2px solid var(--red);
-    padding:14px 16px; color:var(--text); font-size:12px;
-    line-height:1.6; margin-bottom:16px;
+    background:var(--body-dark); border:2px solid var(--accent);
+    padding:14px 16px; color:var(--text);
+    font-size:calc(12px * var(--ui-scale)); line-height:1.6; margin-bottom:16px;
   }
   .unsupported b, .mismatch b{
-    color:var(--red-lit); font-family:var(--pixel); font-size:8px;
-    display:block; margin-bottom:7px; line-height:1.5;
+    color:var(--accent-lit); font-family:var(--pixel);
+    font-size:calc(8px * var(--ui-scale)); display:block;
+    margin-bottom:7px; line-height:1.5;
   }
   .mismatch code{ background:var(--slot); padding:1px 5px; color:var(--text); }
 
-  /* ---- Preset bar ---- */
-  .presets{
+  /* ---- Control bars ---- */
+  .bar{
     display:flex; align-items:center; gap:8px; flex-wrap:wrap;
     background:linear-gradient(180deg, var(--body) 0%, var(--body-dark) 100%);
     border:2px solid var(--bezel);
     box-shadow: inset 0 2px 0 var(--body-lit), inset 0 -2px 0 rgba(0,0,0,.55);
-    padding:12px 13px; margin-bottom:16px;
+    padding:12px 13px; margin-bottom:12px;
   }
-  .presets .label{
-    font-family:var(--pixel); font-size:7px; color:var(--text-dim);
-    margin-right:4px;
+  .bar .label{
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    color:var(--text-dim); margin-right:4px;
   }
-  select{
-    font-family:var(--mono); font-size:12px; font-weight:500;
-    background:var(--slot); color:var(--text);
-    border:2px solid var(--bezel); padding:9px 9px;
-  }
+  .bar .spacer{ flex:1 1 auto; }
 
-  /* ---- Modules: cartridge labels ---- */
+  /* ---- Section bands ---- */
+  .section{ margin-bottom:22px; }
+  .section-head{
+    display:flex; align-items:baseline; gap:12px; flex-wrap:wrap;
+    border-left:5px solid var(--accent); padding:2px 0 2px 11px; margin-bottom:5px;
+  }
+  .section-head h2{
+    font-family:var(--pixel); font-size:calc(11px * var(--ui-scale));
+    margin:0; color:var(--text); text-shadow:var(--glow);
+  }
+  .section-head .scope{
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    color:var(--on-accent); background:var(--accent); padding:4px 7px;
+  }
+  .section-blurb{
+    color:var(--text-dim); font-size:calc(11.5px * var(--ui-scale));
+    line-height:1.6; margin:0 0 11px 16px; max-width:76ch;
+  }
+  /* Warp spans both voice types, so it spans the grid too. */
+  .section.warp .section-head{ border-left-color:var(--warn); }
+  .section.warp .section-head .scope{ background:var(--warn); color:var(--on-accent); }
+  .section.warp .modules{ grid-template-columns:1fr; }
+  .section.warp .module h2{ background:var(--warn); color:var(--on-accent); }
+
   .modules{ display:grid; grid-template-columns:repeat(auto-fill,minmax(285px,1fr)); gap:14px; }
   .module{
     background:linear-gradient(180deg, var(--body) 0%, var(--body-dark) 100%);
@@ -457,103 +602,79 @@ HTML_TEMPLATE = r"""<!doctype html>
     padding:0 0 14px;
   }
   .module h2{
-    font-family:var(--pixel); font-size:8px; letter-spacing:.04em;
-    margin:0 0 13px; padding:11px 12px; line-height:1.5;
-    color:var(--text);
-    background:var(--red);
-    border-bottom:2px solid var(--bezel);
-    text-shadow:1px 1px 0 rgba(0,0,0,.45);
+    font-family:var(--pixel); font-size:calc(8px * var(--ui-scale));
+    letter-spacing:.04em; margin:0 0 13px; padding:11px 12px; line-height:1.5;
+    color:var(--on-accent); background:var(--accent);
+    border-bottom:2px solid var(--bezel); text-shadow:1px 1px 0 rgba(0,0,0,.25);
   }
+  /* Warp's own controls sit in a row rather than a column, since it is wide */
+  .section.warp .module .ctl{ display:inline-block; width:min(260px,100%); vertical-align:top; margin-right:18px; }
+
   .ctl{ margin:0 13px 14px; }
   .ctl:last-child{ margin-bottom:0; }
   .ctl .row{ display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:7px; }
-  .ctl .name{ font-family:var(--pixel); font-size:7px; color:var(--text-dim); line-height:1.5; }
-  .ctl .value{ font-size:12px; font-weight:700; color:var(--red-lit); }
-  .ctl .help{ font-size:10.5px; color:var(--text-dim); margin-top:6px; line-height:1.5; }
+  .ctl .name{
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    color:var(--text-dim); line-height:1.5;
+  }
+  .ctl .value{
+    font-size:calc(12px * var(--ui-scale)); font-weight:700;
+    color:var(--accent-lit); text-shadow:var(--glow);
+  }
+  .ctl .help{
+    font-size:calc(10.5px * var(--ui-scale)); color:var(--text-dim);
+    margin-top:6px; line-height:1.5;
+  }
 
-  /* ---- Toggle: the controller's A/B button ---- */
   .switch{
     width:34px; height:34px; border-radius:50%; flex:none; cursor:pointer;
-    background:radial-gradient(circle at 38% 32%, #6a2621 0%, #47110e 70%);
-    border:2px solid var(--bezel);
-    box-shadow: inset 0 -2px 3px rgba(0,0,0,.6);
+    background:radial-gradient(circle at 38% 32%, var(--body-lit) 0%, var(--body-dark) 70%);
+    border:2px solid var(--bezel); box-shadow: inset 0 -2px 3px rgba(0,0,0,.6);
     display:flex; align-items:center; justify-content:center;
   }
-  .switch .led{
-    width:9px; height:9px; border-radius:50%;
-    background:#2a0c0a; transition:background .12s, box-shadow .12s;
-  }
-  .switch.active{
-    background:radial-gradient(circle at 38% 32%, var(--red-lit) 0%, var(--red) 72%);
-  }
-  .switch.active .led{ background:#ffd9d4; box-shadow:0 0 8px rgba(255,120,110,.95); }
+  .switch .led{ width:9px; height:9px; border-radius:50%; background:var(--bezel); transition:background .12s, box-shadow .12s; }
+  .switch.active{ background:radial-gradient(circle at 38% 32%, var(--accent-lit) 0%, var(--accent) 72%); }
+  .switch.active .led{ background:#fff; box-shadow:0 0 8px var(--accent-lit); }
 
-  /* ---- Sliders ---- */
-  input[type=range]{
-    -webkit-appearance:none; appearance:none; width:100%;
-    height:20px; background:transparent; cursor:pointer; margin:0;
-  }
-  input[type=range]::-webkit-slider-runnable-track{
-    height:8px; background:var(--slot); border:2px solid var(--bezel);
-  }
+  input[type=range]{ -webkit-appearance:none; appearance:none; width:100%; height:20px; background:transparent; cursor:pointer; margin:0; }
+  input[type=range]::-webkit-slider-runnable-track{ height:8px; background:var(--slot); border:2px solid var(--bezel); }
   input[type=range]::-webkit-slider-thumb{
     -webkit-appearance:none; width:14px; height:18px; margin-top:-7px;
     background:linear-gradient(180deg, var(--body-lit) 0%, var(--body-dark) 100%);
     border:2px solid var(--bezel);
   }
-  input[type=range]:hover::-webkit-slider-thumb{
-    background:linear-gradient(180deg, var(--red-lit) 0%, var(--red) 100%);
-  }
-  input[type=range]::-moz-range-track{
-    height:8px; background:var(--slot); border:2px solid var(--bezel);
-  }
-  input[type=range]::-moz-range-thumb{
-    width:14px; height:18px; border-radius:0;
-    background:var(--body-lit); border:2px solid var(--bezel);
-  }
+  input[type=range]:hover::-webkit-slider-thumb{ background:linear-gradient(180deg, var(--accent-lit) 0%, var(--accent) 100%); }
+  input[type=range]::-moz-range-track{ height:8px; background:var(--slot); border:2px solid var(--bezel); }
+  input[type=range]::-moz-range-thumb{ width:14px; height:18px; border-radius:0; background:var(--body-lit); border:2px solid var(--bezel); }
 
-  /* ---- Enum rows ---- */
   .enum-row{ display:flex; gap:5px; flex-wrap:wrap; }
   .enum-btn{
-    font-family:var(--pixel); font-size:7px; line-height:1.5;
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale)); line-height:1.5;
     background:var(--slot); color:var(--text-dim);
-    border:2px solid var(--bezel); padding:8px 8px; cursor:pointer;
+    border:2px solid var(--bezel); padding:8px; cursor:pointer;
   }
   .enum-btn:hover{ color:var(--text); }
-  .enum-btn.active{
-    background:var(--red); color:#fff;
-    text-shadow:1px 1px 0 rgba(0,0,0,.45);
-  }
+  .enum-btn.active{ background:var(--accent); color:var(--on-accent); text-shadow:none; }
 
-  /* ---- Serial log ---- */
-  .console{
-    margin-top:16px; background:var(--slot);
-    border:2px solid var(--bezel); padding:12px 13px;
-  }
+  .console{ margin-top:16px; background:var(--slot); border:2px solid var(--bezel); padding:12px 13px; }
   .console-head{ display:flex; justify-content:space-between; align-items:center; margin-bottom:9px; }
-  .console-head .label{ font-family:var(--pixel); font-size:7px; color:var(--text-dim); }
-  .console .clear{
-    font-family:var(--pixel); font-size:7px; color:var(--text-dim);
-    background:none; border:none; cursor:pointer;
-  }
-  .console .clear:hover{ color:var(--red-lit); }
-  .log{ height:122px; overflow-y:auto; font-size:11.5px; line-height:1.65; color:var(--text-dim); }
-  .log .tx{ color:var(--green); }
-  .log .rx{ color:#d8c98a; }
+  .console-head .label{ font-family:var(--pixel); font-size:calc(7px * var(--ui-scale)); color:var(--text-dim); }
+  .console .clear{ font-family:var(--pixel); font-size:calc(7px * var(--ui-scale)); color:var(--text-dim); background:none; border:none; cursor:pointer; }
+  .console .clear:hover{ color:var(--accent-lit); }
+  .log{ height:122px; overflow-y:auto; font-size:calc(11.5px * var(--ui-scale)); line-height:1.65; color:var(--text-dim); }
+  .log .tx{ color:var(--ok); }
+  .log .rx{ color:var(--warn); }
   .log .sys{ color:var(--text-dim); font-style:italic; }
-  .log .err{ color:var(--red-lit); }
+  .log .err{ color:var(--accent-lit); }
 
   footer{
-    text-align:center; color:var(--text-dim);
-    font-family:var(--pixel); font-size:7px; line-height:1.9;
-    margin-top:20px;
+    text-align:center; color:var(--text-dim); font-family:var(--pixel);
+    font-size:calc(7px * var(--ui-scale)); line-height:1.9; margin-top:20px;
   }
 
-  @media (prefers-reduced-motion: reduce){
-    *{ transition:none !important; }
-  }
+  @media (prefers-reduced-motion: reduce){ *{ transition:none !important; } }
   @media (max-width:560px){
-    .brand h1{ font-size:15px; }
+    .brand h1{ font-size:calc(15px * var(--ui-scale)); }
     .head-inner{ padding:14px; }
   }
 </style>
@@ -589,7 +710,25 @@ HTML_TEMPLATE = r"""<!doctype html>
     every control here writes to the wrong parameter on the unit.
   </div>
 
-  <div class="presets">
+  <div class="bar">
+    <span class="label">Theme</span>
+    <select id="themeSelect">
+      <option value="nes">NES</option>
+      <option value="arcade">Arcade</option>
+      <option value="handheld">Handheld</option>
+    </select>
+    <span class="label">Text</span>
+    <select id="sizeSelect">
+      <option value="0.85">Small</option>
+      <option value="1" selected>Normal</option>
+      <option value="1.2">Large</option>
+      <option value="1.45">Larger</option>
+    </select>
+    <span class="spacer"></span>
+    <button class="btn" id="diagBtn">Diag</button>
+  </div>
+
+  <div class="bar presets">
     <span class="label">Preset</span>
     <select id="presetSelect"></select>
     <button class="btn" id="applyPreset">Apply</button>
@@ -598,10 +737,9 @@ HTML_TEMPLATE = r"""<!doctype html>
     <button class="btn" id="defaultsBtn">Defaults</button>
     <button class="btn" id="exportBtn">Export</button>
     <button class="btn" id="importBtn">Import</button>
-    <button class="btn" id="diagBtn">Diag</button>
   </div>
 
-  <div class="modules" id="modules"></div>
+  <div id="sections"></div>
 
   <div class="console">
     <div class="console-head">
@@ -619,7 +757,8 @@ HTML_TEMPLATE = r"""<!doctype html>
 const PARAMS  = __PARAMS_JSON__;
 const PRESETS = __PRESETS_JSON__;
 const NUM_PARAMS = __NUM_PARAMS__;
-const LAYOUT_VERSION = __LAYOUT_VERSION__;  // must match the flashed firmware
+const LAYOUT_VERSION = __LAYOUT_VERSION__;
+const SECTIONS = __SECTIONS_JSON__;  // must match the flashed firmware
 
 /* ==== State ============================================================= */
 const values = PARAMS.map(p => p.default);
@@ -815,19 +954,61 @@ function displayText(p, raw){
 const renderers = [];  // index -> function updating that control's visuals
 
 function buildUI(){
-  const modules = document.getElementById('modules');
-  const groups = [...new Set(PARAMS.map(p => p.group))];
-  for (const g of groups){
-    const mod = document.createElement('section');
-    mod.className = 'module';
-    const h = document.createElement('h2');
-    h.textContent = g;
-    mod.appendChild(h);
-    for (const p of PARAMS.filter(x => x.group === g)){
-      mod.appendChild(buildControl(p));
+  const host = document.getElementById('sections');
+  const seen = new Set();
+
+  for (const sec of SECTIONS){
+    const groups = sec.groups.filter(g => PARAMS.some(p => p.group === g));
+    if (!groups.length) continue;
+
+    const band = document.createElement('section');
+    band.className = 'section ' + sec.key;
+
+    const head = document.createElement('div');
+    head.className = 'section-head';
+    const h = document.createElement('h2'); h.textContent = sec.title;
+    const sc = document.createElement('span'); sc.className = 'scope'; sc.textContent = sec.scope;
+    head.appendChild(h); head.appendChild(sc);
+    band.appendChild(head);
+
+    if (sec.blurb){
+      const bl = document.createElement('p');
+      bl.className = 'section-blurb'; bl.textContent = sec.blurb;
+      band.appendChild(bl);
     }
-    modules.appendChild(mod);
+
+    const mods = document.createElement('div');
+    mods.className = 'modules';
+    for (const g of groups){
+      seen.add(g);
+      const mod = document.createElement('section');
+      mod.className = 'module';
+      const mh = document.createElement('h2'); mh.textContent = g;
+      mod.appendChild(mh);
+      for (const p of PARAMS.filter(x => x.group === g)) mod.appendChild(buildControl(p));
+      mods.appendChild(mod);
+    }
+    band.appendChild(mods);
+    host.appendChild(band);
   }
+
+  // Anything a new parameter group introduced without a section still shows,
+  // rather than silently vanishing from the panel.
+  const orphans = [...new Set(PARAMS.map(p => p.group))].filter(g => !seen.has(g));
+  if (orphans.length){
+    const mods = document.createElement('div');
+    mods.className = 'modules';
+    for (const g of orphans){
+      const mod = document.createElement('section');
+      mod.className = 'module';
+      const mh = document.createElement('h2'); mh.textContent = g;
+      mod.appendChild(mh);
+      for (const p of PARAMS.filter(x => x.group === g)) mod.appendChild(buildControl(p));
+      mods.appendChild(mod);
+    }
+    host.appendChild(mods);
+  }
+
   const sel = document.getElementById('presetSelect');
   for (const name of Object.keys(PRESETS)){
     const o = document.createElement('option');
@@ -941,6 +1122,33 @@ document.getElementById('importBtn').onclick = () => {
 // the thing to read when notes choke.
 document.getElementById('diagBtn').onclick = () => send('DIAG');
 
+/* ==== Appearance ======================================================== */
+// Theme and text size are per-viewer conveniences, so they live in
+// localStorage rather than on the unit. Wrapped because storage can be
+// unavailable, in which case the defaults simply apply.
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme', t);
+  try { localStorage.setItem('8b8.theme', t); } catch(e){}
+}
+function applyScale(v){
+  document.documentElement.style.setProperty('--ui-scale', v);
+  try { localStorage.setItem('8b8.scale', v); } catch(e){}
+}
+const themeSel = document.getElementById('themeSelect');
+const sizeSel  = document.getElementById('sizeSelect');
+themeSel.onchange = () => applyTheme(themeSel.value);
+sizeSel.onchange  = () => applyScale(sizeSel.value);
+
+(function restoreAppearance(){
+  let t = 'nes', v = '1';
+  try {
+    t = localStorage.getItem('8b8.theme') || t;
+    v = localStorage.getItem('8b8.scale') || v;
+  } catch(e){}
+  themeSel.value = t; sizeSel.value = v;
+  applyTheme(t); applyScale(v);
+})();
+
 /* ==== Boot ============================================================== */
 buildUI();
 renderAll();
@@ -950,13 +1158,74 @@ renderAll();
 """
 
 
+
+def emit_temperaments(path):
+    """Emits the temperament tables.
+
+    The cent offsets come straight from temperaments.py, which is the same
+    file used by the minichord firmware -- one source of truth for both, so
+    the tunings can't drift apart. Nothing here re-derives the maths.
+
+    The firmware turns an offset into a tone divisor with an integer
+    multiply, so a factor table replaces any runtime pow():
+        tempered = (equal * factor + 16384) >> 15,  factor = 32768 * 2^(-c/1200)
+    """
+    import math
+    from temperaments import PROFILES, offsets
+
+    rows = [offsets(p) for p in PROFILES]
+
+    # Root rotation re-anchors on the root, so the offset range widens.
+    span = 0
+    for r in rows:
+        for root in range(12):
+            rot = [r[(i + root) % 12] for i in range(12)]
+            span = max(span, max(abs(v - rot[0]) for v in rot))
+    span += 2                                   # headroom for future entries
+
+    lines = []
+    a = lines.append
+    a("// AUTO-GENERATED by generate.py -- do not edit by hand.")
+    a("// Cent offsets are imported from temperaments.py, the same definitions")
+    a("// used by the minichord firmware.")
+    a("#ifndef TEMPERAMENTS_H")
+    a("#define TEMPERAMENTS_H")
+    a("")
+    a("#include <avr/pgmspace.h>")
+    a("")
+    a(f"#define NUM_TEMPERAMENTS {len(rows)}")
+    a(f"#define TEMPER_CENT_SPAN {span}   // table covers -SPAN..+SPAN cents")
+    a("")
+    a("// Cents from equal temperament, pitch classes C..B. A is 0 in every row.")
+    a("static const int8_t temperCents[NUM_TEMPERAMENTS][12] PROGMEM = {")
+    for p, r in zip(PROFILES, rows):
+        a("  {" + ", ".join(f"{c:3d}" for c in r) + f" }},   // {p['name']}")
+    a("};")
+    a("")
+    a("// 32768 * 2^(-cents/1200), indexed by cents + TEMPER_CENT_SPAN.")
+    a("// A tone period is a DIVISOR, so a sharper note needs a SMALLER one.")
+    a(f"static const uint16_t temperFactor[{2*span+1}] PROGMEM = {{")
+    vals = [str(int(round(32768 * (2 ** (-c / 1200.0)))))
+            for c in range(-span, span + 1)]
+    for i in range(0, len(vals), 10):
+        a("  " + ", ".join(vals[i:i+10]) + ",")
+    a("};")
+    a("")
+    a("#endif // TEMPERAMENTS_H")
+
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"wrote {path}  ({len(rows)} temperaments, +/-{span} cents)")
+
+
 def emit_html(path):
     presets_arrays = {name: preset_array(v) for name, v in PRESETS.items()}
     html = (HTML_TEMPLATE
             .replace("__PARAMS_JSON__", json.dumps(PARAMS))
             .replace("__PRESETS_JSON__", json.dumps(presets_arrays))
             .replace("__NUM_PARAMS__", str(len(PARAMS)))
-            .replace("__LAYOUT_VERSION__", str(layout_version())))
+            .replace("__LAYOUT_VERSION__", str(layout_version()))
+            .replace("__SECTIONS_JSON__", json.dumps(SECTIONS)))
     with open(path, "w") as f:
         f.write(html)
     print(f"wrote {path}  ({len(PRESETS)} presets)")
@@ -966,4 +1235,5 @@ if __name__ == "__main__":
     out = os.path.dirname(os.path.abspath(__file__))
     normalise()
     emit_header(os.path.join(out, "parameters.h"))
+    emit_temperaments(os.path.join(out, "temperaments.h"))
     emit_html(os.path.join(out, "index.html"))
