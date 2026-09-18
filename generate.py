@@ -146,6 +146,18 @@ PARAMS = [
          min=0, max=50, default=0, unit="Hz",
          help="Re-strikes the envelope while a note is held. 0 = off."),
 
+    # --- Digidrums ---------------------------------------------------------
+    # 4-bit PCM pushed through a channel's volume register, the Atari ST
+    # trick. Costs the top voice while enabled, since a Timer3 ISR owns that
+    # channel's amplitude register during playback.
+    dict(key="digi_enable", label="Enable", group="Digidrums", kind="toggle",
+         default=0,
+         help="Replaces kick/snare/hat with sampled versions. Reserves the "
+              "top voice, dropping polyphony from 9 to 8."),
+    dict(key="digi_tune", label="Tune", group="Digidrums", kind="int",
+         min=50, max=200, default=100, unit="%",
+         help="Playback rate. Lower is deeper and longer, higher is tighter."),
+
     # --- Envelope ----------------------------------------------------------
     dict(key="env_mode", label="Mode", group="Envelope", kind="enum",
          options=["MIDI ch presets", "Custom ADSR"], default=0,
@@ -941,8 +953,181 @@ def emit_html(path):
     print(f"wrote {path}  ({len(PRESETS)} presets)")
 
 
+# ---------------------------------------------------------------------------
+# Digidrum samples
+# ---------------------------------------------------------------------------
+# 4-bit PCM played out through a channel's volume register (the Atari ST
+# "digidrum" trick). Each entry is either synthesised here or loaded from a
+# .wav you drop next to this script.
+#
+# To use your own sample: put e.g. kick.wav beside generate.py and set
+# "wav": "kick.wav". Any sample rate / bit depth / channel count is fine;
+# it gets mixed to mono and resampled to DIGI_RATE. Keep them SHORT --
+# every 1ms costs 4 bytes of flash.
+
+DIGI_RATE = 8000        # Hz, playback rate at Tune = 100%
+DIGI_MAX_MS = 400       # guard against a huge wav eating all the flash
+
+# How a PCM sample becomes a 4-bit volume-register code.
+#
+#   "index"  step = round(u * 15). The DAC is logarithmic, so the result is
+#            exponentially shaped -- gritty, and exactly the classic crunchy
+#            digidrum character. Uses all 16 codes.
+#   "level"  pick the step whose measured output level is nearest the sample.
+#            Waveform-accurate in theory, but the AY's levels are so
+#            log-bunched that only three sit above 0.3: a centred waveform
+#            collapses onto ~3 codes and sounds like a buzz. Measured on the
+#            kick: 6 distinct codes vs 15 for "index".
+#
+# "index" is the default because it actually resolves the waveform. Flip to
+# "level" and re-run if you want to hear the difference.
+DIGI_ENCODE = "index"
+
+SAMPLES = [
+    dict(name="kick",  note=35, synth="kick",  ms=140, wav=None),
+    dict(name="snare", note=38, synth="snare", ms=180, wav=None),
+    dict(name="hat",   note=42, synth="hat",   ms=60,  wav=None),
+]
+
+
+def _synth(kind, ms, rate):
+    """Returns a list of floats in -1..1."""
+    import math
+    import random
+    rnd = random.Random(0x8B8)          # fixed seed: reproducible builds
+    n = int(rate * ms / 1000)
+    out = []
+    for i in range(n):
+        t = i / rate
+        env = math.exp(-t * (1000.0 / ms) * 3.2)
+
+        if kind == "kick":
+            # Pitch sweeping down is what makes it read as a kick rather
+            # than a thud: 110Hz falling to 45Hz over the hit.
+            f = 45.0 + 65.0 * math.exp(-t * 28.0)
+            phase = 2 * math.pi * (45.0 * t + (65.0 / 28.0) * (1 - math.exp(-t * 28.0)))
+            s = math.sin(phase) * env
+            if t < 0.004:               # transient click
+                s += (rnd.random() * 2 - 1) * 0.5 * (1 - t / 0.004)
+
+        elif kind == "snare":
+            noise = rnd.random() * 2 - 1
+            tone = math.sin(2 * math.pi * 185.0 * t) * 0.45
+            s = (noise * 0.75 + tone) * env
+
+        else:  # hat -- crude high-pass by differencing successive noise
+            noise = rnd.random() * 2 - 1
+            prev = out[-1] if out else 0.0
+            s = (noise - prev * 0.5) * math.exp(-t * (1000.0 / ms) * 5.0)
+
+        out.append(max(-1.0, min(1.0, s)))
+    return out
+
+
+def _load_wav(path, rate):
+    import wave, audioop, struct
+    with wave.open(path, "rb") as w:
+        nch, width, fr, nframes = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()
+        raw = w.readframes(nframes)
+    if nch > 1:
+        raw = audioop.tomono(raw, width, 0.5, 0.5)
+    if width != 2:
+        raw = audioop.lin2lin(raw, width, 2)
+        width = 2
+    if fr != rate:
+        raw, _ = audioop.ratecv(raw, width, 1, fr, rate, None)
+    vals = struct.unpack("<%dh" % (len(raw) // 2), raw)
+    peak = max(1, max(abs(v) for v in vals))
+    return [v / peak for v in vals]
+
+
+def _encode_ay(samples):
+    """PCM to 4-bit volume-register codes. See DIGI_ENCODE above.
+
+    Signal is unipolar: with tone and noise muted, the channel output is a
+    DC level set by the volume register, so the sample rides a DC offset
+    that the output coupling removes.
+    """
+    import math
+    out = []
+    if DIGI_ENCODE == "level":
+        levels = [0.0] + [math.exp((i - 15) / 2.0) for i in range(1, 16)]
+        for s in samples:
+            u = max(0.0, min(1.0, (s + 1.0) / 2.0))
+            out.append(min(range(16), key=lambda i: abs(levels[i] - u)))
+    else:
+        for s in samples:
+            u = max(0.0, min(1.0, (s + 1.0) / 2.0))
+            out.append(max(0, min(15, int(round(u * 15)))))
+    return out
+
+
+def emit_samples(path):
+    import os
+    here = os.path.dirname(os.path.abspath(path))
+    blob, defs = [], []
+
+    for sd in SAMPLES:
+        if sd["wav"]:
+            wav_path = os.path.join(here, sd["wav"])
+            if not os.path.exists(wav_path):
+                sys.exit(f"ERROR: sample wav not found: {wav_path}")
+            pcm = _load_wav(wav_path, DIGI_RATE)
+            limit = int(DIGI_RATE * DIGI_MAX_MS / 1000)
+            if len(pcm) > limit:
+                print(f"  note: {sd['name']} truncated to {DIGI_MAX_MS}ms")
+                pcm = pcm[:limit]
+        else:
+            pcm = _synth(sd["synth"], sd["ms"], DIGI_RATE)
+
+        nib = _encode_ay(pcm)
+        distinct = len(set(nib))
+        if distinct < 8:
+            print(f"  WARNING: {sd['name']} uses only {distinct} of 16 codes"
+                  f" -- it will sound crushed. Check DIGI_ENCODE.")
+        if len(nib) % 2:
+            nib.append(0)
+        defs.append(dict(name=sd["name"], note=sd["note"],
+                         offset=len(blob), count=len(nib)))
+        for i in range(0, len(nib), 2):         # pack 2 per byte, high first
+            blob.append((nib[i] << 4) | nib[i + 1])
+
+    lines = []
+    a = lines.append
+    a("// AUTO-GENERATED by generate.py -- do not edit by hand.")
+    a("#ifndef SAMPLES_H")
+    a("#define SAMPLES_H")
+    a("")
+    a("#include <avr/pgmspace.h>")
+    a("")
+    a(f"#define NUM_SAMPLES {len(defs)}")
+    a(f"#define DIGI_BASE_RATE {DIGI_RATE}")
+    a("")
+    a("struct SampleDef { uint16_t offset; uint16_t count; uint8_t note; };")
+    a("")
+    a("static const SampleDef sampleDefs[NUM_SAMPLES] PROGMEM = {")
+    for d in defs:
+        a(f"  {{ {d['offset']}, {d['count']}, {d['note']} }},"
+          f"  // {d['name']}: {d['count']} samples,"
+          f" {d['count']*1000//DIGI_RATE}ms")
+    a("};")
+    a("")
+    a(f"// {len(blob)} bytes of packed 4-bit PCM")
+    a("static const uint8_t sampleData[] PROGMEM = {")
+    for i in range(0, len(blob), 16):
+        a("  " + ", ".join("0x%02X" % b for b in blob[i:i + 16]) + ",")
+    a("};")
+    a("")
+    a("#endif // SAMPLES_H")
+
+    with open(path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"wrote {path}  ({len(defs)} samples, {len(blob)} bytes of flash)")
+
+
 if __name__ == "__main__":
     out = os.path.dirname(os.path.abspath(__file__))
     normalise()
     emit_header(os.path.join(out, "parameters.h"))
+    emit_samples(os.path.join(out, "samples.h"))
     emit_html(os.path.join(out, "index.html"))

@@ -110,6 +110,7 @@ struct ToneParams {
 // the same array the web panel edits over serial and that presets are made
 // of. Edit generate.py, re-run it, reflash; never edit parameters.h by hand.
 #include "parameters.h"
+#include "samples.h"
 #include <EEPROM.h>
 
 static uint8_t params[NUM_PARAMS];
@@ -225,6 +226,15 @@ static void initBusPins() {
 static void writeReg(uint8_t chip, unsigned char reg, unsigned char db) {
   // Same BC1-kept-low NACT/BAR/IAB/DWS sequencing as the original, just
   // routed through direct port writes instead of digitalWrite().
+  //
+  // ATOMIC: the digidrum Timer3 ISR writes registers too, over the same
+  // 8-bit data bus and the same BDIR/BC2 lines. An interrupt landing
+  // between the address latch and the data write would corrupt both
+  // transfers, so the whole sequence runs with interrupts masked. Costs the
+  // ISR at most one register write of jitter (~5us against a 125us sample
+  // period), which is inaudible on percussion.
+  uint8_t sreg_save = SREG;
+  cli();
   ChipCtl &c = chipCtl[chip];
 
   // Inactive (BDIR BC2 BC1 0 0 0)
@@ -250,6 +260,8 @@ static void writeReg(uint8_t chip, unsigned char reg, unsigned char db) {
   // Inactive (BDIR BC2 BC1 0 0 0)
   pinLow(c.bc2);
   pinLow(c.bdir);
+
+  SREG = sreg_save;
 }
 
 // AY-3-8910 driver ---------------------------------------
@@ -769,6 +781,14 @@ public:
 
 const ushort MAX_VOICES = 9;
 
+// Digidrum playback reserves the top voice: a Timer3 ISR owns that
+// channel's amplitude register, so the allocators and the 100Hz voice
+// update must both leave it alone. Declared here because startNote() and
+// startPercussion() reference it well before the digidrum engine below.
+static const uint8_t DIGI_VOICE = MAX_VOICES - 1;        // voice 8
+static const uint8_t DIGI_CHIP  = (MAX_VOICES - 1) % 3;  // chip C
+static const uint8_t DIGI_SUB   = (MAX_VOICES - 1) / 3;  // channel C
+
 static Voice voices[MAX_VOICES];
 
 // MIDI synthesiser ---------------------------------------
@@ -853,6 +873,7 @@ static uint8_t m_voiceNo[N_NOTES];
 
 static bool startNote(ushort idx) {
   for (ushort i = 0; i < MAX_VOICES; i++) {
+    if (params[P_DIGI_ENABLE] && i == DIGI_VOICE) continue;
     if (m_playing[i] == NO_NOTE) {
       voices[i].start(MIDI_MIN + idx, m_velocity[idx], m_chan[idx]);
       m_playing[i] = idx;
@@ -909,9 +930,88 @@ static void applyDrumMods(FXParams &f) {
   }
 }
 
+// --- Digidrums -----------------------------------------------------------
+// 4-bit PCM pushed out through one channel's volume register, the Atari ST
+// trick. With tone and noise muted on that channel, its output is a DC level
+// set by the volume register, so writing sample codes at a steady rate
+// reproduces the waveform. Timer3 gives a jitter-free sample clock; Timer1
+// is already the 1MHz AY master clock and Timer0 is millis(), so Timer3 is
+// the one that's free. TCCR3A stays 0 so OC3A never drives pin 5, which is
+// one of our data bus lines.
+//
+// The top voice is reserved while this is enabled: the ISR owns that
+// channel's amplitude register, so nothing else may write it.
+
+static volatile uint16_t digiIndex = 0;   // nibble cursor into the sample
+static volatile uint16_t digiEnd   = 0;   // nibble count, 0 = idle
+static volatile uint16_t digiBase  = 0;   // byte offset of this sample
+
+static void digiTimerInit() {
+  TCCR3A = 0;                       // no output compare pins -- pin 5 is ours
+  TCCR3B = (1 << WGM32) | (1 << CS31);   // CTC, prescaler 8 -> 2MHz tick
+  TCCR3C = 0;
+  TIMSK3 = 0;                       // ISR enabled only while a sample plays
+}
+
+static void digiSetRate() {
+  // Tune scales playback rate: 2MHz / (rate) - 1, rate = base * tune / 100.
+  uint32_t rate = ((uint32_t)DIGI_BASE_RATE * params[P_DIGI_TUNE]) / 100UL;
+  if (rate < 2000UL)  rate = 2000UL;
+  if (rate > 20000UL) rate = 20000UL;
+  uint16_t ocr = (uint16_t)((2000000UL / rate) - 1);
+  OCR3A = ocr;
+}
+
+ISR(TIMER3_COMPA_vect) {
+  if (digiIndex >= digiEnd) {
+    TIMSK3 = 0;                                   // done: stop the ISR
+    writeReg(DIGI_CHIP, PSGRegs::TONEAAMPL + DIGI_SUB, 0);
+    digiEnd = 0;
+    return;
+  }
+  uint8_t b = pgm_read_byte(&sampleData[digiBase + (digiIndex >> 1)]);
+  uint8_t v = (digiIndex & 1) ? (b & 0x0F) : (b >> 4);   // high nibble first
+  writeReg(DIGI_CHIP, PSGRegs::TONEAAMPL + DIGI_SUB, v);
+  digiIndex++;
+}
+
+// Returns true if this note was handled as a digidrum.
+static bool digiTrigger(note_t note) {
+  if (!params[P_DIGI_ENABLE]) return false;
+
+  for (uint8_t i = 0; i < NUM_SAMPLES; i++) {
+    if (pgm_read_byte(&sampleDefs[i].note) != note) continue;
+
+    uint16_t off = pgm_read_word(&sampleDefs[i].offset);
+    uint16_t cnt = pgm_read_word(&sampleDefs[i].count);
+
+    // Mute tone and noise on the reserved channel so its output is pure DC
+    // from the volume register, and make sure the envelope isn't driving it
+    // (M bit clear). Done through the cache so it survives a flush.
+    psg.regs[DIGI_CHIP][PSGRegs::MIXER] |= (1 << DIGI_SUB) | (8 << DIGI_SUB);
+    psg.regs[DIGI_CHIP][PSGRegs::TONEAAMPL + DIGI_SUB] = 0;
+    psg.update(DIGI_CHIP);
+
+    digiSetRate();
+    uint8_t sreg = SREG;
+    cli();
+    digiBase  = off;
+    digiIndex = 0;
+    digiEnd   = cnt;
+    SREG = sreg;
+    TCNT3  = 0;
+    TIMSK3 = (1 << OCIE3A);          // start playback
+    return true;
+  }
+  return false;
+}
+
 static bool startPercussion(note_t note) {
+  if (digiTrigger(note)) return true;   // sampled version wins for this note
+
   ushort i;
   for (i = 0; i < MAX_VOICES; i++) {
+    if (params[P_DIGI_ENABLE] && i == DIGI_VOICE) continue;
     //if (m_playing[i] == NO_NOTE || m_playing[i] == PERC_NOTE) {
     if (i != NO_VOICE && m_playing[i] == NO_NOTE) {
       if (note >= PERC_MIN && note <= PERC_MAX) {
@@ -1135,6 +1235,8 @@ static void recalcDerived() {
   // up to ~4kHz, where the effect stops being rhythmic and becomes timbre.
   warpIntervalUs = 30000UL / params[P_WARP_RATE];
   if (warpIntervalUs < 250UL) warpIntervalUs = 250UL;
+
+  digiSetRate();
 
   // Any parameter change resyncs the chips, which also cleans up whatever
   // the Warp Zone scribbled directly into the hardware.
@@ -1413,6 +1515,9 @@ static void update100Hz() {
   }
 
   for (ushort i = 0; i < MAX_VOICES; i++) {
+    // Reserved digidrum channel: its amplitude register belongs to the ISR.
+    if (params[P_DIGI_ENABLE] && i == DIGI_VOICE) continue;
+
     voices[i].update100Hz();
 
     if (m_playing[i] == PERC_NOTE && ! (voices[i].isPlaying())) {
@@ -1551,6 +1656,7 @@ void setup() {
   if (!loadParamsFromEEPROM()) {
     loadDefaults();
   }
+  digiTimerInit();
   recalcDerived();
 
   // Serial (USB-CDC) is needed unconditionally for the parameter protocol,

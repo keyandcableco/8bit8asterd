@@ -5,8 +5,8 @@
 
 #include <avr/pgmspace.h>
 
-#define NUM_PARAMS 32
-#define PARAM_LAYOUT_VERSION 0x6F
+#define NUM_PARAMS 34
+#define PARAM_LAYOUT_VERSION 0xEB
 
 enum {
   P_BUZZ_ENABLE = 0,  // Buzzy Bass: Enable [0..1] default 0
@@ -33,18 +33,20 @@ enum {
   P_ARP_RATE = 21,  // Auto FX: Arp Rate [1..50] default 17
   P_SWEEP_AMOUNT = 22,  // Auto FX: Sweep [0..64] default 32
   P_RETRIG_RATE = 23,  // Auto FX: Retrigger [0..50] default 0
-  P_ENV_MODE = 24,  // Envelope: Mode [0..1] default 0
-  P_ENV_ATTACK = 25,  // Envelope: Attack [1..32] default 1
-  P_ENV_DECAY = 26,  // Envelope: Decay [1..32] default 8
-  P_ENV_SUSTAIN = 27,  // Envelope: Sustain [0..32] default 32
-  P_ENV_RELEASE = 28,  // Envelope: Release [1..32] default 32
-  P_GLIDE = 29,  // Pitch & Response: Glide [0..100] default 0
-  P_TRANSPOSE = 30,  // Pitch & Response: Transpose [0..48] default 24
-  P_VEL_SENSE = 31,  // Pitch & Response: Velocity [0..1] default 1
+  P_DIGI_ENABLE = 24,  // Digidrums: Enable [0..1] default 0
+  P_DIGI_TUNE = 25,  // Digidrums: Tune [50..200] default 100
+  P_ENV_MODE = 26,  // Envelope: Mode [0..1] default 0
+  P_ENV_ATTACK = 27,  // Envelope: Attack [1..32] default 1
+  P_ENV_DECAY = 28,  // Envelope: Decay [1..32] default 8
+  P_ENV_SUSTAIN = 29,  // Envelope: Sustain [0..32] default 32
+  P_ENV_RELEASE = 30,  // Envelope: Release [1..32] default 32
+  P_GLIDE = 31,  // Pitch & Response: Glide [0..100] default 0
+  P_TRANSPOSE = 32,  // Pitch & Response: Transpose [0..48] default 24
+  P_VEL_SENSE = 33,  // Pitch & Response: Velocity [0..1] default 1
 };
 
-static const uint8_t PARAM_MIN[NUM_PARAMS] PROGMEM = { 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 50, 50, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0 };
-static const uint8_t PARAM_MAX[NUM_PARAMS] PROGMEM = { 1, 8, 3, 64, 4, 120, 63, 1, 200, 31, 200, 1, 200, 15, 1, 15, 200, 200, 200, 14, 6, 50, 64, 50, 1, 32, 32, 32, 32, 100, 48, 1 };
-static const uint8_t PARAM_DEFAULT[NUM_PARAMS] PROGMEM = { 0, 1, 0, 32, 0, 30, 20, 0, 50, 6, 0, 0, 40, 5, 0, 8, 100, 100, 100, 7, 0, 17, 32, 0, 0, 1, 8, 32, 32, 0, 24, 1 };
+static const uint8_t PARAM_MIN[NUM_PARAMS] PROGMEM = { 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 50, 50, 0, 0, 0, 1, 0, 0, 0, 50, 0, 1, 1, 0, 1, 0, 0, 0 };
+static const uint8_t PARAM_MAX[NUM_PARAMS] PROGMEM = { 1, 8, 3, 64, 4, 120, 63, 1, 200, 31, 200, 1, 200, 15, 1, 15, 200, 200, 200, 14, 6, 50, 64, 50, 1, 200, 1, 32, 32, 32, 32, 100, 48, 1 };
+static const uint8_t PARAM_DEFAULT[NUM_PARAMS] PROGMEM = { 0, 1, 0, 32, 0, 30, 20, 0, 50, 6, 0, 0, 40, 5, 0, 8, 100, 100, 100, 7, 0, 17, 32, 0, 0, 100, 0, 1, 8, 32, 32, 0, 24, 1 };
 
 #endif // PARAMETERS_H
