@@ -11,7 +11,8 @@
  * Better voice distribution methodology
  */
 
-void(* resetFunc) (void) = 0;//declare reset function at address 0
+// resetFunc() removed: All Notes Off now calls softReset() instead of
+// rebooting the MCU. See softReset() further down.
 
 // Uncomment to enable 5-pin DIN serial midi
 #define SERIALMIDI
@@ -975,32 +976,40 @@ ISR(TIMER3_COMPA_vect) {
   digiIndex++;
 }
 
+// Starts sample i. Deliberately ignores P_DIGI_ENABLE so the serial DIGI:n
+// command can exercise the audio path on its own, separately from the note
+// mapping and the enable toggle.
+static void digiTriggerIndex(uint8_t i) {
+  if (i >= NUM_SAMPLES) return;
+
+  uint16_t off = pgm_read_word(&sampleDefs[i].offset);
+  uint16_t cnt = pgm_read_word(&sampleDefs[i].count);
+
+  // Mute tone and noise on the reserved channel so its output is pure DC
+  // from the volume register, and make sure the envelope isn't driving it
+  // (M bit clear). Done through the cache so it survives a flush.
+  psg.regs[DIGI_CHIP][PSGRegs::MIXER] |= (1 << DIGI_SUB) | (8 << DIGI_SUB);
+  psg.regs[DIGI_CHIP][PSGRegs::TONEAAMPL + DIGI_SUB] = 0;
+  psg.update(DIGI_CHIP);
+
+  digiSetRate();
+  uint8_t sreg = SREG;
+  cli();
+  digiBase  = off;
+  digiIndex = 0;
+  digiEnd   = cnt;
+  SREG = sreg;
+  TCNT3  = 0;
+  TIMSK3 = (1 << OCIE3A);          // start playback
+}
+
 // Returns true if this note was handled as a digidrum.
 static bool digiTrigger(note_t note) {
   if (!params[P_DIGI_ENABLE]) return false;
 
   for (uint8_t i = 0; i < NUM_SAMPLES; i++) {
     if (pgm_read_byte(&sampleDefs[i].note) != note) continue;
-
-    uint16_t off = pgm_read_word(&sampleDefs[i].offset);
-    uint16_t cnt = pgm_read_word(&sampleDefs[i].count);
-
-    // Mute tone and noise on the reserved channel so its output is pure DC
-    // from the volume register, and make sure the envelope isn't driving it
-    // (M bit clear). Done through the cache so it survives a flush.
-    psg.regs[DIGI_CHIP][PSGRegs::MIXER] |= (1 << DIGI_SUB) | (8 << DIGI_SUB);
-    psg.regs[DIGI_CHIP][PSGRegs::TONEAAMPL + DIGI_SUB] = 0;
-    psg.update(DIGI_CHIP);
-
-    digiSetRate();
-    uint8_t sreg = SREG;
-    cli();
-    digiBase  = off;
-    digiIndex = 0;
-    digiEnd   = cnt;
-    SREG = sreg;
-    TCNT3  = 0;
-    TIMSK3 = (1 << OCIE3A);          // start playback
+    digiTriggerIndex(i);
     return true;
   }
   return false;
@@ -1439,6 +1448,33 @@ static void handleCommand(char *cmd) {
     Serial.print(':');
     Serial.println(params[idx]);
   }
+  else if (strncmp(cmd, "DIGI:", 5) == 0) {
+    // Fire a sample directly by index, bypassing MIDI and the note lookup.
+    uint8_t n = (uint8_t)atoi(cmd + 5);
+    if (n < NUM_SAMPLES) {
+      digiTriggerIndex(n);
+      Serial.print(F("DIGIFIRE:"));
+      Serial.println(n);
+    }
+  }
+  else if (strcmp(cmd, "DIAG") == 0) {
+    Serial.print(F("DIAG enable="));   Serial.print(params[P_DIGI_ENABLE]);
+    Serial.print(F(" tune="));         Serial.print(params[P_DIGI_TUNE]);
+    Serial.print(F(" TIMSK3="));       Serial.print(TIMSK3);
+    Serial.print(F(" OCR3A="));        Serial.print(OCR3A);
+    Serial.print(F(" idx="));          Serial.print(digiIndex);
+    Serial.print(F(" end="));          Serial.print(digiEnd);
+    Serial.print(F(" chip="));         Serial.print(DIGI_CHIP);
+    Serial.print(F(" reg="));          Serial.print(PSGRegs::TONEAAMPL + DIGI_SUB);
+    Serial.print(F(" mixC="));         Serial.print(psg.regs[DIGI_CHIP][PSGRegs::MIXER]);
+    Serial.print(F(" codes="));
+    for (uint8_t k = 0; k < 4; k++) {
+      uint8_t b = pgm_read_byte(&sampleData[k]);
+      Serial.print(b >> 4);   Serial.print(',');
+      Serial.print(b & 0x0F); Serial.print(',');
+    }
+    Serial.println();
+  }
   else if (strcmp(cmd, "DUMP") == 0) {
     sendLayout();
     sendPreset();
@@ -1671,6 +1707,30 @@ void setup() {
 #endif
 }
 
+// Silences everything and returns the synth to a known state WITHOUT
+// rebooting the MCU. The V2.2 firmware called resetFunc() here, which jumps
+// to address 0 and takes USB down with it -- if a DAW or controller sends
+// All Notes Off periodically, the unit drops off the bus mid-session and
+// uploads fail. This does the musical part of a reset and leaves USB alone.
+static void softReset() {
+  TIMSK3 = 0;                       // stop any digidrum ISR first
+  digiIndex = 0;
+  digiEnd   = 0;
+
+  for (ushort i = 0; i < MAX_VOICES; i++) {
+    voices[i].kill();
+  }
+  synth_init();
+
+  g_buzzChip = -1;
+  g_buzzSub  = -1;
+  arpStep = 0;
+  arpTickCount = 0;
+
+  psg.init();                       // re-initialise all three chips
+  psg.invalidate();
+}
+
 void handleMidiMessage(midiEventPacket_t &rx) {
   if (rx.header==0x9) {// Note on
     noteOn(rx.byte1 & 0xF, rx.byte2, rx.byte3);
@@ -1680,14 +1740,7 @@ void handleMidiMessage(midiEventPacket_t &rx) {
   }
   else if (rx.header==0xB) {// Control Change
     if (rx.byte2 == 0x78 || rx.byte2 == 0x79 || rx.byte2 == 0x7B) {// AllSoundOff, ResetAllControllers, or AllNotesOff
-      // Kill Voices
-      //for (ushort i = 0; i < MAX_VOICES; i++) {
-        //voices[i].kill();
-        //delay(1);
-        //psg.init();
-        //delay(1);
-        resetFunc();
-      //}
+      softReset();
     }
   }
 }
