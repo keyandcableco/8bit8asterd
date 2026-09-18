@@ -596,6 +596,34 @@ public:
     kill();
   }
   
+  // Works out this voice's target tone period from a MIDI note, applying
+  // transpose and the current temperament. Split out of start() so a held
+  // note can be retuned in place when either of those changes, instead of
+  // keeping the pitch it happened to be born with.
+  void setPitchFor(note_t note) {
+    int n = (int)note - MIDI_MIN + (int)params[P_TRANSPOSE] - 24;
+    if (n < 0) n = 0;
+    if (n >= (int)N_NOTES) n = (int)N_NOTES - 1;
+    m_noteIdx = (uint8_t)n;
+    m_target = pgm_read_word(&note_table[n]);
+
+    uint8_t temper = params[P_TEMPERAMENT];
+    if (temper > 0 && temper < NUM_TEMPERAMENTS) {
+      uint8_t root = params[P_TEMPER_ROOT];
+      uint8_t pc   = (uint8_t)((((MIDI_MIN + n) % 12) + 12 - root) % 12);
+      int8_t  c    = (int8_t)pgm_read_byte(&temperCents[temper][pc]);
+      int8_t  c0   = (int8_t)pgm_read_byte(&temperCents[temper][0]);
+      int     off  = (int)c - (int)c0;
+      if (off < -TEMPER_CENT_SPAN) off = -TEMPER_CENT_SPAN;
+      if (off >  TEMPER_CENT_SPAN) off =  TEMPER_CENT_SPAN;
+      uint16_t factor = pgm_read_word(&temperFactor[off + TEMPER_CENT_SPAN]);
+      uint32_t d = (((uint32_t)m_target * factor) + 16384UL) >> 15;
+      if (d < 1) d = 1;
+      if (d > 4095) d = 4095;
+      m_target = (ushort)d;
+    }
+  }
+
   void start(note_t note, midictrl_t vel, midictrl_t chan) {
     // Envelope source: either the original per-MIDI-channel presets, or the
     // global custom ADSR from the parameter bank.
@@ -613,38 +641,7 @@ public:
       vel = 127; // velocity response off: everything at full volume
     }
 
-    // Transpose, clamped to the note table.
-    int n = (int)note - MIDI_MIN + (int)params[P_TRANSPOSE] - 24;
-    if (n < 0) n = 0;
-    if (n >= (int)N_NOTES) n = (int)N_NOTES - 1;
-    m_noteIdx = (uint8_t)n;
-    m_target = pgm_read_word(&note_table[n]);
-
-    // Historical temperament. The table gives cents from equal for each
-    // pitch class; rotating by the root moves which key is sweet, and
-    // subtracting the root's own offset leaves the root exactly in tune so
-    // changing temperament never shifts the instrument's reference pitch.
-    // (The minichord anchors A instead, because its master tuning is set
-    // from A; here a root control is the more useful anchor.)
-    //
-    // A tone period is a DIVISOR, so a sharper note needs a SMALLER one --
-    // the factor table already carries that inversion. Integer multiply
-    // with rounding, no floating point anywhere.
-    uint8_t temper = params[P_TEMPERAMENT];
-    if (temper > 0 && temper < NUM_TEMPERAMENTS) {
-      uint8_t root = params[P_TEMPER_ROOT];
-      uint8_t pc   = (uint8_t)((((MIDI_MIN + n) % 12) + 12 - root) % 12);
-      int8_t  c    = (int8_t)pgm_read_byte(&temperCents[temper][pc]);
-      int8_t  c0   = (int8_t)pgm_read_byte(&temperCents[temper][0]);
-      int     off  = (int)c - (int)c0;
-      if (off < -TEMPER_CENT_SPAN) off = -TEMPER_CENT_SPAN;
-      if (off >  TEMPER_CENT_SPAN) off =  TEMPER_CENT_SPAN;
-      uint16_t factor = pgm_read_word(&temperFactor[off + TEMPER_CENT_SPAN]);
-      uint32_t d = (((uint32_t)m_target * factor) + 16384UL) >> 15;
-      if (d < 1) d = 1;
-      if (d > 4095) d = 4095;
-      m_target = (ushort)d;
-    }
+    setPitchFor(note);
 
     // Glide: start from wherever the previous note's pitch was and slew
     // toward the target in update100Hz(). 0 = jump straight there.
@@ -1308,6 +1305,16 @@ static void recalcDerived() {
   // up to ~4kHz, where the effect stops being rhythmic and becomes timbre.
   warpIntervalUs = 30000UL / params[P_WARP_RATE];
   if (warpIntervalUs < 250UL) warpIntervalUs = 250UL;
+
+  // Retune anything already sounding. Transpose and temperament used to be
+  // read once when a note started, so a held chord kept whatever tuning it
+  // was born with and changing either did nothing until the next note.
+  // m_playing holds the note index, so the original MIDI note is recoverable.
+  for (uint8_t v = 0; v < MAX_VOICES; v++) {
+    uint8_t idx = m_playing[v];
+    if (idx == NO_NOTE || idx == PERC_NOTE) continue;
+    voices[v].setPitchFor((note_t)(MIDI_MIN + idx));
+  }
 
   // Any parameter change resyncs the chips, which also cleans up whatever
   // the Warp Zone scribbled directly into the hardware.

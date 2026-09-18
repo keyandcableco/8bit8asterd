@@ -1184,13 +1184,22 @@ function makeOctave(id, get, set, lo, hi){
   return show;
 }
 let activeRoot = 1;               // column currently selected
-let heldRows = new Set();         // rows held within that column
+let heldRows = new Set();         // rows physically held right now
+// What is actually sounding, which is not the same thing: with Hold on the
+// buttons are released while the chord keeps playing. Re-voicing controls
+// key off this, otherwise changing octave or spacing under Hold does
+// nothing -- which is exactly when you would reach for them.
+let soundingKey = null;
 let chordNotes = [];
 let strumNotes = [];
 let lastStrumSeg = -1, strumming = false;
 
+function currentKey(){
+  return heldRows.size ? [...heldRows].sort().join('') : soundingKey;
+}
+
 function chordSpec(){
-  const key = [...heldRows].sort().join('');
+  const key = currentKey();
   const c = CHORDS[key];
   if (!c) return null;
   const useBarry = barryOn && c.barry;
@@ -1275,6 +1284,7 @@ function releaseChord(){
 function pressRow(rootIdx, rowIdx){
   if (rootIdx !== activeRoot){ heldRows.clear(); activeRoot = rootIdx; }
   heldRows.add(rowIdx);
+  soundingKey = [...heldRows].sort().join('');
   refreshChord();
 }
 
@@ -1283,8 +1293,15 @@ function releaseRow(rowIdx){
   if (heldRows.size === 0 && !latchOn){
     releaseChord();
     strumNotes = [];
+    soundingKey = null;
   }
   paintChords();
+}
+
+// Re-form whatever is currently sounding. Chord notes cannot glide to a new
+// voicing, so this restarts them; that retrigger IS the update.
+function revoice(){
+  if (currentKey()) refreshChord();
 }
 
 function refreshChord(){
@@ -1301,7 +1318,8 @@ function refreshChord(){
 
 function paintChords(){
   document.querySelectorAll('.chordbtn').forEach(b => {
-    const on = (b.dataset.root | 0) === activeRoot && heldRows.has(b.dataset.q | 0);
+    const key = currentKey() || '';
+    const on = (b.dataset.root | 0) === activeRoot && key.indexOf(String(b.dataset.q)) >= 0;
     b.classList.toggle('latched', on && latchOn);
     b.classList.toggle('down', on && !latchOn);
   });
@@ -1383,30 +1401,27 @@ function buildPlaySurface(){
   sharpSw.onclick = () => {
     sharpOn = !sharpOn;
     sharpSw.classList.toggle('active', sharpOn);
-    if (heldRows.size) refreshChord();
+    revoice();
   };
   latchSw.onclick = () => {
     latchOn = !latchOn;
     latchSw.classList.toggle('active', latchOn);
-    if (!latchOn){ heldRows.clear(); releaseChord(); strumNotes = []; }
+    if (!latchOn){ heldRows.clear(); releaseChord(); strumNotes = []; soundingKey = null; }
     paintChords();
   };
   const barrySw = document.getElementById('barrySw');
   if (barrySw) barrySw.onclick = () => {
     barryOn = !barryOn;
     barrySw.classList.toggle('active', barryOn);
-    if (heldRows.size) refreshChord();
+    revoice();
   };
 
   buildKeyboard();
 
-  makeOctave('chordOct', () => chordOct, v => {
-    chordOct = v;
-    if (heldRows.size) refreshChord();
-  }, -2, 2);
+  makeOctave('chordOct', () => chordOct, v => { chordOct = v; revoice(); }, -2, 2);
   makeOctave('strumOct', () => strumOct, v => {
     strumOct = v;
-    if (heldRows.size) strumNotes = ladderFor();
+    if (currentKey()) strumNotes = ladderFor();   // harp only; no need to retrigger
   }, -1, 2);
   // The piano sits at C4 and is two octaves wide, so it can drop further
   // than it can climb before the top of the table folds keys together.
@@ -1415,12 +1430,12 @@ function buildPlaySurface(){
   if (invSel) invSel.onchange = () => {
     inversion = invSel.value | 0;
     try { localStorage.setItem('8b8.inversion', inversion); } catch(e){}
-    if (heldRows.size) refreshChord();
+    revoice();
   };
   if (spcSel) spcSel.onchange = () => {
     spacing = spcSel.value | 0;
     try { localStorage.setItem('8b8.spacing', spacing); } catch(e){}
-    if (heldRows.size) refreshChord();
+    revoice();
   };
   try {
     const i = localStorage.getItem('8b8.inversion');
@@ -1830,13 +1845,13 @@ function gpChords(btn, hit){
     sharpOn = !sharpOn;
     const sw = document.getElementById('sharpSw');
     if (sw) sw.classList.toggle('active', sharpOn);
-    if (heldRows.size) refreshChord();
+    revoice();
   }
   if (hit(GP.R2)){
     barryOn = !barryOn;
     const sw = document.getElementById('barrySw');
     if (sw) sw.classList.toggle('active', barryOn);
-    if (heldRows.size) refreshChord();
+    revoice();
   }
 
   // Press adds a row and re-forms the chord; release only drops the row, so
@@ -1845,7 +1860,7 @@ function gpChords(btn, hit){
   rows.forEach(([b, row]) => { if (hit(b)) pressRow(gpRootIdx, row); });
   rows.forEach(([b, row]) => { if (!btn[b] && gpPrev[b]) releaseRow(row); });
 
-  if (hit(GP.START)){ heldRows.clear(); releaseChord(); strumNotes = []; paintChords(); }
+  if (hit(GP.START)){ heldRows.clear(); soundingKey = null; releaseChord(); strumNotes = []; paintChords(); }
 }
 
 function gpDrums(hit){
