@@ -1996,6 +1996,22 @@ function seqRowsForEngine(){
   return rows;
 }
 
+// Auditioning a pitch has to release it again. Without this the preview
+// used the same bare playNote() the sequencer uses, so a clicked note
+// sustained until that row's next scheduled note-off -- which never comes at
+// all when the sequencer is stopped.
+const previewTimers = {};
+function previewNote(n, chan){
+  chan = (chan === undefined) ? 0 : chan;
+  if (chan === 9){ playNote(n, 110, 9); return; }   // drums are one-shots
+  clearTimeout(previewTimers[n]);
+  playNote(n, 100, 0);
+  previewTimers[n] = setTimeout(() => {
+    stopNote(n, 0);
+    delete previewTimers[n];
+  }, 180);
+}
+
 function noteNoteFor(ri){
   return Math.max(24, Math.min(96, NOTE_BASE + NOTE_SEMIS[ri] + noteOct * 12));
 }
@@ -2027,7 +2043,7 @@ function buildNoteSequencer(){
     row.className = 'seqrow' + (name.indexOf('#') >= 0 ? ' sharprow' : '');
     const nm = document.createElement('div');
     nm.className = 'seqname'; nm.textContent = name;
-    nm.onclick = () => playNote(noteNoteFor(ri), 100, 0);
+    nm.onclick = () => previewNote(noteNoteFor(ri));
     row.appendChild(nm);
     noteCells[ri] = [];
     for (let si = 0; si < SEQ_STEPS; si++){
@@ -2038,7 +2054,7 @@ function buildNoteSequencer(){
         e.preventDefault();
         noteGrid[ri][si] = !noteGrid[ri][si];
         c.classList.toggle('on', noteGrid[ri][si]);
-        if (noteGrid[ri][si]) playNote(noteNoteFor(ri), 100, 0);
+        if (noteGrid[ri][si]) previewNote(noteNoteFor(ri));
         seqEnginePattern(seqRowsForEngine());
       });
       noteCells[ri][si] = c;
