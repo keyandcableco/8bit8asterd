@@ -194,16 +194,17 @@ PARAMS = [
          help="Presets = the original per-MIDI-channel tones[] table."),
     dict(key="env_attack", label="Attack", group="Envelope", kind="int",
          min=1, max=32, default=1,
-         help=""),
+         help="How long the note takes to reach full level, from 10ms at 1 up to 4s at 32. Spaced by ratio, so the fader moves evenly by ear."),
     dict(key="env_decay", label="Decay", group="Envelope", kind="int",
-         min=1, max=32, default=8,
-         help=""),
+         min=1, max=32, default=26,
+         help="How long it takes to fall from full level to the Sustain "
+              "level. Spaced by ratio, so the fader moves evenly by ear."),
     dict(key="env_sustain", label="Sustain", group="Envelope", kind="int",
          min=0, max=32, default=32,
          help=""),
     dict(key="env_release", label="Release", group="Envelope", kind="int",
-         min=1, max=32, default=32,
-         help=""),
+         min=1, max=32, default=19,
+         help="How long the note takes to fade once you let go."),
 
     # --- Pitch & Response --------------------------------------------------
     dict(key="glide", label="Glide", group="Pitch & Response", kind="int",
@@ -256,19 +257,19 @@ PRESETS = {
                            vib_enable=1, vib_rate=55, vib_depth=5, vib_delay=60),
     "Haunted Organ": dict(vib_enable=1, vib_rate=30, vib_depth=12,
                           trem_enable=1, trem_rate=35, trem_depth=6,
-                          env_mode=1, env_attack=6, env_decay=4,
-                          env_sustain=28, env_release=20),
+                          env_mode=1, env_attack=22, env_decay=30,
+                          env_sustain=28, env_release=21),
     "Wind Machine": dict(noise_enable=1, noise_period=13,
                          trem_enable=1, trem_rate=25, trem_depth=7,
-                         env_mode=1, env_attack=10, env_decay=2,
-                         env_sustain=30, env_release=4, vel_sense=0),
+                         env_mode=1, env_attack=20, env_decay=32,
+                         env_sustain=30, env_release=30, vel_sense=0),
     "Chip Whistle": dict(transpose=36, glide=25,
                          vib_enable=1, vib_rate=80, vib_depth=4, vib_delay=40),
     "808 Kit": dict(drum_tune=78, drum_decay=165, drum_bend=130, drum_noise=9),
     "Tight Kit": dict(drum_tune=118, drum_decay=62, drum_bend=70, drum_noise=5),
     "MadMax Buzzer": dict(buzz_enable=1, buzz_ratio=2, buzz_shape=1,
                           buzz_detune=38, env_mode=1, env_attack=1,
-                          env_decay=3, env_sustain=30, env_release=12),
+                          env_decay=31, env_sustain=30, env_release=24),
     "Arcade Warp": dict(warp_mode=1, warp_rate=95, warp_depth=40,
                         buzz_enable=1, buzz_ratio=3, buzz_detune=36),
     "Broken Cabinet": dict(warp_mode=3, warp_rate=22, warp_depth=55,
@@ -290,12 +291,12 @@ PRESETS = {
     "Bad Ground": dict(warp_mode=3, warp_rate=6, warp_depth=38,
                        warp_motion=35, noise_period=6),
     "1-Up Arp": dict(arp_mode=1, arp_rate=20, env_mode=1, env_attack=1,
-                     env_decay=6, env_sustain=26, env_release=8),
+                     env_decay=28, env_sustain=26, env_release=26),
     "Laser Jump": dict(sweep_amount=52, env_mode=1, env_attack=1,
-                       env_decay=10, env_sustain=6, env_release=4),
+                       env_decay=25, env_sustain=6, env_release=30),
     "Machine Gun": dict(retrig_rate=38, noise_enable=1, noise_period=4,
-                        env_mode=1, env_attack=1, env_decay=14,
-                        env_sustain=10, env_release=6),
+                        env_mode=1, env_attack=1, env_decay=23,
+                        env_sustain=10, env_release=28),
 }
 
 # ---------------------------------------------------------------------------
@@ -450,6 +451,22 @@ def emit_header(path):
     sv = [str(int(round(256 * (2 ** (d * 30.0 / 63.0 / 12.0))))) for d in range(64)]
     for i in range(0, len(sv), 12):
         a("  " + ", ".join(sv[i:i + 12]) + ",")
+    a("};")
+    a("")
+    a("// Envelope segment rates, in 1/16ths of an amplitude unit per 100Hz")
+    a("// tick, indexed by the parameter value. The parameter is a TIME and")
+    a("// the scale is exponential, 10ms to 4s: as a linear per-tick rate it")
+    a("// was reciprocal, so 1->2 halved the time while 31->32 moved it 4ms.")
+    a("// A 1/16th accumulator keeps the slow end usable, which an integer")
+    a("// rate could not -- 1023/400 rounds to 3 and swallows the top third")
+    a("// of the fader.")
+    a("static const uint16_t ENV_RATE[33] PROGMEM = {")
+    ev = ["0"]
+    for v in range(1, 33):
+        t = 1.0 * (400.0 ** ((v - 1) / 31.0))
+        ev.append(str(max(1, min(65535, int(round(1023.0 * 16.0 / t))))))
+    for i in range(0, len(ev), 11):
+        a("  " + ", ".join(ev[i:i + 11]) + ",")
     a("};")
     a("")
     a("#endif // PARAMETERS_H")

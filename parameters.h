@@ -6,7 +6,7 @@
 #include <avr/pgmspace.h>
 
 #define NUM_PARAMS 42
-#define PARAM_LAYOUT_VERSION 0x6A
+#define PARAM_LAYOUT_VERSION 0x4D
 
 enum {
   P_BUZZ_ENABLE = 0,  // Buzzy Bass: Enable [0..1] default 0
@@ -40,9 +40,9 @@ enum {
   P_RETRIG_RATE = 28,  // Auto FX: Retrigger [0..50] default 0
   P_ENV_MODE = 29,  // Envelope: Mode [0..1] default 0
   P_ENV_ATTACK = 30,  // Envelope: Attack [1..32] default 1
-  P_ENV_DECAY = 31,  // Envelope: Decay [1..32] default 8
+  P_ENV_DECAY = 31,  // Envelope: Decay [1..32] default 26
   P_ENV_SUSTAIN = 32,  // Envelope: Sustain [0..32] default 32
-  P_ENV_RELEASE = 33,  // Envelope: Release [1..32] default 32
+  P_ENV_RELEASE = 33,  // Envelope: Release [1..32] default 19
   P_GLIDE = 34,  // Pitch & Response: Glide [0..100] default 0
   P_TRANSPOSE = 35,  // Pitch & Response: Transpose [0..48] default 24
   P_MIX_NOISE = 36,  // Mixer: Noise [0..15] default 15
@@ -55,7 +55,7 @@ enum {
 
 static const uint8_t PARAM_MIN[NUM_PARAMS] PROGMEM = { 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 50, 50, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
 static const uint8_t PARAM_MAX[NUM_PARAMS] PROGMEM = { 1, 8, 3, 64, 8, 120, 63, 64, 1, 200, 31, 200, 1, 200, 15, 1, 15, 200, 200, 200, 14, 50, 30, 1, 63, 6, 50, 64, 50, 1, 32, 32, 32, 32, 100, 48, 15, 15, 15, 9, 11, 1 };
-static const uint8_t PARAM_DEFAULT[NUM_PARAMS] PROGMEM = { 0, 1, 0, 32, 0, 30, 20, 0, 0, 50, 6, 0, 0, 40, 5, 0, 8, 100, 100, 100, 7, 0, 0, 0, 0, 0, 17, 32, 0, 0, 1, 8, 32, 32, 0, 24, 15, 15, 15, 0, 0, 1 };
+static const uint8_t PARAM_DEFAULT[NUM_PARAMS] PROGMEM = { 0, 1, 0, 32, 0, 30, 20, 0, 0, 50, 6, 0, 0, 40, 5, 0, 8, 100, 100, 100, 7, 0, 0, 0, 0, 0, 17, 32, 0, 0, 1, 26, 32, 19, 0, 24, 15, 15, 15, 0, 0, 1 };
 
 // Ticks between events for the re-strike controls (Drum Roll,
 // Retrigger), indexed by the parameter value. The tick is 100Hz, so
@@ -80,6 +80,19 @@ static const uint16_t WARP_STRETCH[64] PROGMEM = {
   689, 708, 728, 748, 769, 791, 813, 835, 859, 883, 907, 933,
   959, 985, 1013, 1041, 1070, 1100, 1131, 1162, 1195, 1228, 1262, 1297,
   1333, 1371, 1409, 1448,
+};
+
+// Envelope segment rates, in 1/16ths of an amplitude unit per 100Hz
+// tick, indexed by the parameter value. The parameter is a TIME and
+// the scale is exponential, 10ms to 4s: as a linear per-tick rate it
+// was reciprocal, so 1->2 halved the time while 31->32 moved it 4ms.
+// A 1/16th accumulator keeps the slow end usable, which an integer
+// rate could not -- 1023/400 rounds to 3 and swallows the top third
+// of the fader.
+static const uint16_t ENV_RATE[33] PROGMEM = {
+  0, 16368, 13491, 11120, 9166, 7555, 6227, 5133, 4231, 3487, 2874,
+  2369, 1953, 1610, 1327, 1094, 901, 743, 612, 505, 416, 343,
+  283, 233, 192, 158, 130, 108, 89, 73, 60, 50, 41,
 };
 
 #endif // PARAMETERS_H

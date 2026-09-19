@@ -600,11 +600,13 @@ static const ushort note_table[N_NOTES] PROGMEM = {
 };
 
 static const ushort MAX_TONES = 4;
+// Re-pointed when the envelope parameters became TIMES rather than per-tick
+// rates, so these channels keep the shapes they had.
 static const ToneParams tones[MAX_TONES] PROGMEM = {
-  { 1, 8, 32, 32 },
-  { 1 , 8,  1,  32 },
-  { 8, 1, 1, 32 },
-  { 4, 1, 32, 1 }
+  { 1, 26, 32, 19 },
+  { 1, 26,  1, 19 },
+  { 21, 32, 1, 19 },
+  { 24, 32, 32, 32 }
 };
 
 // For glide: the divisor of the most recently started melodic note, so a
@@ -621,6 +623,15 @@ public:
   int m_attack, m_ampl, m_ampl_top, m_decay, m_sustain, m_release, m_shape;
   static const int AMPL_MAX = 1023;
   ushort m_adsr;
+  uint8_t m_envAcc;       // 1/16ths carried between ticks
+
+  // Rates are in 1/16ths of an amplitude unit per tick, so a four second
+  // segment still moves every tick instead of rounding to nothing.
+  int envStep(uint16_t r) {
+    uint16_t t = (uint16_t)m_envAcc + (r & 15u);
+    m_envAcc = (uint8_t)(t & 15u);
+    return (int)(r >> 4) + (int)(t >> 4);
+  }
   ushort m_vel;
 
   void init (ushort chan) {
@@ -690,35 +701,23 @@ public:
     m_age = 0;
 
     m_vel = 768 + (vel << 1);
-    m_attack = tp.attack;
-    m_decay = tp.decay; 
-    //m_decay = 0; 
+    if (vel > 127) { m_vel = AMPL_MAX; m_ampl_top = AMPL_MAX; }
 
-        if (vel > 127) {
-      m_ampl = AMPL_MAX;
-      m_ampl_top = AMPL_MAX;
-    }
+    // Segment rates come from a table and are TIMES, not per-tick steps.
+    m_attack  = pgm_read_word(&ENV_RATE[tp.attack  > 32 ? 32 : tp.attack]);
+    m_decay   = pgm_read_word(&ENV_RATE[tp.decay   > 32 ? 32 : tp.decay]);
+    m_release = pgm_read_word(&ENV_RATE[tp.rel     > 32 ? 32 : tp.rel]);
 
-    
-     if (m_attack > 1) {
-      m_adsr = 'A';
-      //m_ampl = 768 + (vel << 1);
-      m_ampl = 255 + (m_attack >> 1);
-    }
+    // Sustain is a fraction of the PEAK the note will reach. It used to be
+    // taken from the STARTING amplitude, which differed by a factor of four
+    // depending on whether attack was 1 or 2 -- so nudging attack past 1
+    // quietly collapsed the sustain level.
+    m_sustain = (int)(((long)m_vel * tp.sustain) >> 5);
 
+    m_ampl  = 0;
+    m_envAcc = 0;
+    m_adsr  = 'A';
 
-
-    else {
-      m_ampl = 768 + (vel << 1);
-      m_adsr = 'D';
-      }
-    
-    m_sustain = (m_ampl * tp.sustain) >> 5;
-    
-    m_release = tp.rel;
-    
-    
-    //psg.setEnvelope(32, 11); 
     psg.setTone(m_chan, m_pitch, m_ampl >> 6);
   }
 
@@ -791,50 +790,44 @@ public:
       }
     }
 
-   if (m_ampl == 0) {
+   // An attack now starts from silence, so zero amplitude no longer means
+   // "nothing to do" -- it is the first tick of the rise.
+   if (m_ampl == 0 && m_adsr != 'A') {
       return;
     }
     
     switch(m_adsr) {
 //
       case 'A':
-        if (m_ampl < m_vel) {
-         
-        m_ampl += (m_attack << 1);
-        //m_adsr = 'A';
-        }
-//
-        
-        
+        m_ampl += envStep(m_attack);
         if (m_ampl >= m_vel) {
+          m_ampl = m_vel;
+          m_envAcc = 0;
           m_adsr = 'D';
-        };
-       
-        
-        break;
-        
-      case 'D':
-        
-        if (m_ampl <= m_sustain) {
-          m_adsr = 'S';
-          m_ampl = m_sustain;
         }
-        
-        m_ampl -= m_decay;
-        
+        break;
+
+      case 'D':
+        // Reaching sustain used to set the level and then subtract one more
+        // decay step anyway, so the held level came out low by that step and
+        // depended on the Decay setting.
+        m_ampl -= envStep(m_decay);
+        if (m_ampl <= m_sustain) {
+          m_ampl = m_sustain;
+          m_envAcc = 0;
+          m_adsr = (m_sustain > 0) ? 'S' : 'R';
+        }
         break;
 
       case 'S':
         break;
 
-      case 'R':
-        if ( m_ampl < m_release ) {
-          m_ampl = 0;
-        }
-        else {
-          m_ampl -= m_release;
-        }
+      case 'R': {
+        int step = envStep(m_release);
+        if (m_ampl < step) m_ampl = 0;
+        else m_ampl -= step;
         break;
+      }
 
       case 'X':
         // FX is playing.         
