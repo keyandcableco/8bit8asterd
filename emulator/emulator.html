@@ -617,6 +617,8 @@
         </div>
       </div>
 
+      <div class="cc-row" id="midiRoutes"></div>
+
       <div class="play-wrap">
         <div class="matrix">
           <div class="cols" id="colHeads"></div>
@@ -645,7 +647,6 @@
       </div>
       <div class="piano-scroll"><div class="piano" id="piano"></div></div>
       <div class="pads" id="pads"></div>
-      <div class="cc-row" id="midiRoutes"></div>
     </div>
   </section>
 
@@ -1572,9 +1573,9 @@ function buildPlaySurface(){
 // chord section and another for its harp. Roles are remembered by device
 // name, so a controller keeps its assignment across sessions.
 const MIDI_ROLES = [
-  ['notes',  'Notes'],
-  ['chords', 'Chords'],
-  ['harp',   'Harp'],
+  ['notes',  'Notes'],      // plays through as sent; the strumpad follows it
+  ['chords', 'Re-voice'],   // identify the chord and press the matrix instead
+  ['harp',   'Harp'],       // pluck the strumpad
   ['off',    'Off'],
 ];
 const midiRoles = {};                  // device name -> role
@@ -1639,8 +1640,35 @@ function detectChord(){
   return best;
 }
 
+const PC_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+let lastChordLog = '';
+
 function midiChordUpdate(){
   const found = detectChord();
+
+  // Report what came in when nothing matches, because otherwise a chord the
+  // table does not know about is indistinguishable from the feature being
+  // broken -- it just silently does nothing.
+  if (!found && midiHeld.size >= 3){
+    const notes = [...midiHeld].sort((a, b) => a - b);
+    const sig = notes.join(',');
+    if (sig !== lastChordLog){
+      lastChordLog = sig;
+      const named = notes.map(n => PC_NAMES[n % 12] + (Math.floor(n / 12) - 1));
+      const pcs = [...new Set(notes.map(n => n % 12))].sort((a, b) => a - b);
+      log('err', 'No chord matched: ' + named.join(' ') +
+                 '  (' + pcs.length + ' pitch classes: ' +
+                 pcs.map(p => PC_NAMES[p]).join(' ') + ')');
+    }
+  } else if (found){
+    const sig = [...midiHeld].sort((a, b) => a - b).join(',');
+    if (sig !== lastChordLog){
+      lastChordLog = sig;
+      log('sys', 'Chord in: ' + PC_NAMES[found.root] + ' ' + found.key +
+                 ' from ' + midiHeld.size + ' notes');
+    }
+  }
+
   if (!found){
     if (midiHeld.size === 0 && !latchOn){
       heldRows.clear(); soundingKey = null; releaseChord(); strumNotes = []; paintChords();
@@ -1697,6 +1725,42 @@ function harpPluck(note){
   if (el){ el.classList.add('lit'); setTimeout(() => el.classList.remove('lit'), 120); }
 }
 
+// Builds a harp ladder straight from whatever notes arrived, without naming
+// the chord at all. Chord identification can fail -- the matrix only knows
+// seven chord types, and an instrument may voice something outside them --
+// but stacking the pitch classes that actually arrived always works, and is
+// arguably more faithful anyway.
+function ladderFromNotes(notes){
+  if (!notes.length) return [];
+  const pcs = [...new Set(notes.map(n => n % 12))].sort((a, b) => a - b);
+  const low = Math.min.apply(null, notes);
+  const start = low - 12 + strumOct * 12;         // an octave below, as the matrix ladder does
+  const floor12 = Math.floor(start / 12) * 12;
+
+  let out = [];
+  for (let o = 0; o < 8 && out.length < STRUM_SEGMENTS; o++){
+    for (const pc of pcs){
+      const n = floor12 + pc + o * 12;
+      if (n < start) continue;
+      out.push(n);
+      if (out.length >= STRUM_SEGMENTS) break;
+    }
+  }
+  if (!out.length) return [];
+  while (Math.max.apply(null, out) > 96) out = out.map(n => n - 12);
+  while (Math.min.apply(null, out) < 24) out = out.map(n => n + 12);
+  return out;
+}
+
+// In Notes role the incoming chord is passed through untouched, but it also
+// quietly retunes the strumpad so the 8b8 harp follows what is being played.
+// Nothing here can fail to "match": if it is a chord, the harp follows it.
+let followTimer = null;
+function midiFollowUpdate(){
+  const notes = [...midiHeld].sort((a, b) => a - b);
+  if (notes.length >= 2) strumNotes = ladderFromNotes(notes);
+}
+
 function midiNote(on, note, vel, chan, role){
   role = role || 'notes';
   if (role === 'off') return;
@@ -1708,6 +1772,11 @@ function midiNote(on, note, vel, chan, role){
 
   if (role !== 'chords' || chan === 9){
     if (on) playNote(note, vel, chan); else stopNote(note, chan);
+    if (chan !== 9){
+      if (on) midiHeld.add(note); else midiHeld.delete(note);
+      clearTimeout(followTimer);
+      followTimer = setTimeout(midiFollowUpdate, 35);
+    }
     return;
   }
   // Chords role: the notes are evidence, not something to play directly.
