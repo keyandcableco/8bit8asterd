@@ -749,12 +749,18 @@ HTML_TEMPLATE = r"""<!doctype html>
 
   .strum{
     flex:0 0 120px; display:flex; flex-direction:column; gap:1px;
-    touch-action:none; min-height:300px;
+    touch-action:none; min-height:clamp(340px, 46vh, 560px);
   }
   .strum .seg{
     flex:1; border:1px solid var(--bezel); cursor:pointer;
     background:linear-gradient(90deg, var(--body-dark) 0%, var(--slot) 100%);
+    display:flex; align-items:center; justify-content:center;
+    font-family:var(--pixel); font-size:calc(5px * var(--ui-scale));
+    color:var(--text-dim); line-height:1; overflow:hidden;
+    pointer-events:auto;
   }
+  .strum .seg > span{ pointer-events:none; }
+  .strum .seg.lit, .strum .seg.held{ color:var(--on-accent); }
   /* Laid flat, the harp runs the full width under the matrix instead of
      standing beside it, which suits a phone held upright. */
   .strum.horiz{
@@ -762,6 +768,7 @@ HTML_TEMPLATE = r"""<!doctype html>
   }
   .strum.horiz .seg{
     background:linear-gradient(180deg, var(--body-dark) 0%, var(--slot) 100%);
+    font-size:calc(6px * var(--ui-scale));
   }
   .strum.horiz .label{ display:none; }
   /* Grid: three across, like the minichord keymaster, which is far easier to
@@ -770,9 +777,13 @@ HTML_TEMPLATE = r"""<!doctype html>
     flex:1 1 100%; display:grid; grid-template-columns:repeat(3,1fr);
     gap:3px; min-height:0; height:auto;
   }
-  .strum.grid .seg{ min-height:42px; border:2px solid var(--bezel); }
+  .strum.grid .seg{
+    min-height:42px; border:2px solid var(--bezel);
+    font-size:calc(7px * var(--ui-scale));
+  }
   .strum.grid .label{ display:none; }
   .strum .seg.lit{ background:var(--accent); }
+  .strum .seg.held{ background:var(--accent-lit); }
   .strum .label{
     font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
     color:var(--text-dim); text-align:center; padding-bottom:4px;
@@ -1858,7 +1869,7 @@ function releaseRow(rowIdx){
   if (heldRows.size === 0 && !latchOn){
     releaseChord();
     soundingKey = null;
-    strumNotes = ladderFor();      // stays primed from lastHarpKey
+    updateStrum();                 // stays primed from lastHarpKey
   }
   paintChords();
 }
@@ -1875,7 +1886,7 @@ function refreshChord(){
   releaseChord();
   chordNotes = chordFor();
   chordNotes.forEach(n => playNote(n, 100, 0));
-  strumNotes = ladderFor();
+  updateStrum();
   const el = document.getElementById('chordName');
   if (el) el.textContent = ROOTS[activeRoot][0] + (sharpOn ? '#' : '') + spec.suffix;
   paintChords();
@@ -1893,6 +1904,23 @@ function paintChords(){
 // Vertical runs high at the top, like a harp stood on end; horizontal runs
 // low at the left, like a keyboard. Rebuilt on a change rather than reversed
 // with CSS, so the segment order always matches what is under the finger.
+// Every string says what it plays. Rebuilt whenever the ladder changes, so
+// the labels follow the chord, the harp mode and the octave.
+function labelStrum(){
+  document.querySelectorAll('.strum .seg').forEach(el => {
+    const i = el.dataset.seg | 0;
+    const span = el.firstChild;
+    if (!span) return;
+    span.textContent = (i < strumNotes.length) ? noteName(strumNotes[i]) : '';
+  });
+}
+
+// One place to rebuild the ladder, so the labels can never drift from it.
+function updateStrum(){
+  strumNotes = ladderFor();
+  labelStrum();
+}
+
 function buildStrumSegments(){
   const strum = document.getElementById('strum');
   if (!strum) return;
@@ -1925,8 +1953,10 @@ function buildStrumSegments(){
   order.forEach(i => {
     const seg = document.createElement('div');
     seg.className = 'seg'; seg.dataset.seg = i;
+    seg.appendChild(document.createElement('span'));
     strum.appendChild(seg);
   });
+  labelStrum();
 }
 
 function buildPlaySurface(){
@@ -1991,7 +2021,7 @@ function buildPlaySurface(){
         if (heldRows.size === 0 && !latchOn){
           releaseChord();
           soundingKey = null;
-          strumNotes = ladderFor();
+          updateStrum();
         }
         paintChords();
       };
@@ -2004,28 +2034,38 @@ function buildPlaySurface(){
   const strum = document.getElementById('strum');
   buildStrumSegments();
 
-  // The firmware ignores a note-on for a note that is already sounding, so
-  // plucking a string the held chord is already playing made no sound at all
-  // -- and its note-off, 400ms later, released the chord's note for good.
-  // That is the note "ceasing" when the harp covers it. For those, release
-  // and immediately restrike so the pluck is heard, and schedule nothing:
-  // the chord still holds the note, so it carries on afterwards.
-  function pluck(n){
-    if (chordNotes.indexOf(n) >= 0){
-      stopNote(n, 0);
-      playNote(n, 100, 0);
-      return;
-    }
+  // Strings behave like the on-screen keys: a note sounds for as long as the
+  // finger is on it. Leaving a string -- by sliding onto the next one or by
+  // lifting -- lets it ring on briefly rather than cutting it dead, so a
+  // strum still overlaps the way a harp does.
+  const HARP_RING_MS = 400;
+  let heldStrum = null;          // { note, el } currently under the pointer
+
+  // The firmware ignores a note-on for a note already sounding, so a string
+  // the held chord is already playing would make no sound, and releasing it
+  // would end the chord's note for good. Those restrike instead and are
+  // never released here: the chord still owns them.
+  function strumOn(n, el){
+    if (chordNotes.indexOf(n) >= 0) stopNote(n, 0);
     playNote(n, 100, 0);
-    setTimeout(() => stopNote(n, 0), 400);   // plucked, not held
+    el.classList.add('held');
+  }
+
+  function strumOff(entry, ring){
+    if (!entry) return;
+    entry.el.classList.remove('held');
+    if (chordNotes.indexOf(entry.note) >= 0) return;   // the chord keeps it
+    if (ring) setTimeout(() => stopNote(entry.note, 0), HARP_RING_MS);
+    else stopNote(entry.note, 0);
   }
 
   function hit(seg, el){
-    if (seg === lastStrumSeg) return;      // only on crossing into a new one
-    lastStrumSeg = seg;
-    if (!strumNotes.length) return;
+    if (heldStrum && heldStrum.seg === seg) return;    // already on this one
+    strumOff(heldStrum, true);                          // let the last one ring
+    if (!strumNotes.length || seg >= strumNotes.length){ heldStrum = null; return; }
     const n = strumNotes[seg];
-    pluck(n);
+    strumOn(n, el);
+    heldStrum = { note: n, el, seg };
     el.classList.add('lit');
     setTimeout(() => el.classList.remove('lit'), 120);
   }
@@ -2045,7 +2085,12 @@ function buildPlaySurface(){
     const seg = el && el.closest ? el.closest('.seg') : null;
     if (seg) hit(seg.dataset.seg | 0, seg);
   });
-  const endStrum = () => { strumming = false; lastStrumSeg = -1; };
+  const endStrum = () => {
+    strumming = false;
+    lastStrumSeg = -1;
+    strumOff(heldStrum, true);     // ring on after the finger lifts
+    heldStrum = null;
+  };
   strum.addEventListener('pointerup', endStrum);
   strum.addEventListener('pointercancel', endStrum);
 
@@ -2095,7 +2140,7 @@ function buildPlaySurface(){
     if (keySel) keySel.parentElement.style.opacity =
       (kind === 'key' || kind === 'customKey') ? '' : '0.35';
     buildStrumSegments();
-    if (currentKey() || kind === 'key' || kind === 'customKey') strumNotes = ladderFor();
+    if (currentKey() || kind === 'key' || kind === 'customKey') updateStrum();
   }
 
   if (modeSel){
@@ -2185,7 +2230,7 @@ function buildPlaySurface(){
   makeOctave('chordOct', () => chordOct, v => { chordOct = v; revoice(); }, -2, 2);
   makeOctave('strumOct', () => strumOct, v => {
     strumOct = v;
-    if (currentKey()) strumNotes = ladderFor();   // harp only; no need to retrigger
+    if (currentKey()) updateStrum();   // harp only; no need to retrigger
   }, -1, 2);
   // The piano sits at C4 and is two octaves wide, so it can drop further
   // than it can climb before the top of the table folds keys together.
