@@ -841,6 +841,29 @@ if (navigator.requestMIDIAccess){
   log('sys', 'This browser has no Web MIDI. Chrome, Edge or Firefox 108+ do.');
 }
 
+/* ---- sequencer engine: timed inside the audio render ---- */
+// Sample-counted in C++ rather than by setTimeout, because on this page the
+// audio callback runs on the main thread and any timer shares it. Measured
+// drift is about one sample over four seconds.
+function seqEnginePattern(rows){
+  if (!ready) return;
+  rows.forEach((r, i) => Module.ccall('emu_seq_row', null,
+    ['number','number','number'], [i, r.note, r.mask]));
+}
+function seqEngineStart(bpm, steps){
+  if (!ready) return;
+  Module.ccall('emu_seq_start', null, ['number','number'], [bpm, steps]);
+}
+function seqEngineTempo(bpm){
+  if (ready) Module.ccall('emu_seq_tempo', null, ['number'], [bpm]);
+}
+function seqEngineStop(){
+  if (ready) Module.ccall('emu_seq_stop', null, [], []);
+}
+function seqEngineStep(){
+  return ready ? Module.ccall('emu_seq_step', 'number', [], []) : -1;
+}
+
 
 /* ==== Protocol (shared by both transports) ============================== */
 let sawLayout = false;

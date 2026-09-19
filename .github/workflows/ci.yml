@@ -26,7 +26,26 @@ jobs:
             exit 1
           fi
 
-  # 2. The firmware must actually fit and compile for the real target. This is
+  # 2. Both generated panels must actually boot. They share most of their
+  #    code but the two transports are edited separately, so it is easy to
+  #    break one page while the other stays fine -- and a page that throws
+  #    during boot still renders, just with everything after the throw
+  #    missing.
+  panels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - name: Generate and smoke test
+        run: |
+          python3 generate.py
+          npm install --no-save jsdom
+          node tools/page-smoke.js
+
+  # 3. The firmware must actually fit and compile for the real target. This is
   #    the check that catches prototype-ordering breakage and RAM creep before
   #    anyone flashes a board.
   firmware:
@@ -53,7 +72,7 @@ jobs:
             echo "::warning::RAM is tight -- see the dynamic memory line above"
           fi
 
-  # 3. The emulator runs the real firmware, so building it natively is also a
+  # 4. The emulator runs the real firmware, so building it natively is also a
   #    second compiler's opinion on the firmware source.
   emulator:
     runs-on: ubuntu-latest
