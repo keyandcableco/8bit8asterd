@@ -307,6 +307,11 @@
   .pad b{ display:block; font-size:calc(6px * var(--ui-scale)); opacity:.6; margin-bottom:5px; }
 
   /* ---- Sequencer ---- */
+  .step.past{ opacity:.28; }             /* beyond the pattern length */
+  .seqrow.sharprow .seqname{ opacity:.6; }
+  .step.note.on{ background:var(--warn); }
+
+  /* ---- Sequencer ---- */
   .seq{ padding:0 13px 13px; overflow-x:auto; }
   .seqrow{ display:flex; align-items:center; gap:3px; margin-bottom:3px; }
   .seqname{
@@ -651,6 +656,8 @@
         <button class="btn" id="seqClear">Clear</button>
         <span class="label">Pattern</span>
         <select id="seqPreset"></select>
+        <span class="label">Length</span>
+        <select id="seqLen"></select>
         <span class="label">Tempo</span>
         <input type="range" id="seqTempo" min="50" max="200" value="110" style="flex:1 1 120px;max-width:200px">
         <span class="value" id="seqBpm">110 BPM</span>
@@ -658,6 +665,23 @@
       <div class="seq">
         <div class="seqhead" id="seqHead"></div>
         <div id="seqRows"></div>
+      </div>
+    </div>
+
+    <div class="module">
+      <h2>Note Sequencer</h2>
+      <div class="cc-row">
+        <div class="cc">
+          <div class="oct" id="noteOct"></div>
+          <span class="cc-label">Octave</span>
+        </div>
+        <div class="cc">
+          <span class="readout" id="noteRange">C3 &ndash; B3</span>
+          <span class="cc-label">Range</span>
+        </div>
+      </div>
+      <div class="seq">
+        <div id="noteRows"></div>
       </div>
     </div>
   </section>
@@ -809,7 +833,7 @@ if (!('serial' in navigator)){
 // Notes reach the unit over a serial link, so there is nothing to be
 // sample-accurate against. A drift-corrected timer is the best available:
 // each tick is scheduled from when it SHOULD have fired, not from now.
-let seqRowsCache = [], seqTimer = null, seqNextAt = 0, seqPos = -1, seqBpm = 110, seqLen = 16;
+let seqRowsCache = [], seqHeld = [], seqTimer = null, seqNextAt = 0, seqPos = -1, seqBpm = 110, seqLen = 16;
 
 function seqEnginePattern(rows){ seqRowsCache = rows; }
 function seqEngineTempo(bpm){ seqBpm = bpm; }
@@ -817,13 +841,22 @@ function seqEngineStep(){ return seqPos; }
 function seqEngineStop(){
   if (seqTimer) clearTimeout(seqTimer);
   seqTimer = null; seqPos = -1;
+  seqHeld.forEach(n => stopNote(n, 0));
+  seqHeld.length = 0;
 }
 function seqEngineStart(bpm, steps){
   seqBpm = bpm; seqLen = steps; seqPos = 0;
   seqNextAt = performance.now();
   const tick = () => {
+    // Release melodic notes from the previous step before striking the next,
+    // or a pitch row would hold its first note forever. Drums are one-shots.
+    seqHeld.forEach(n => stopNote(n, 0));
+    seqHeld.length = 0;
     seqRowsCache.forEach(r => {
-      if (r.mask & (1 << seqPos)) playNote(r.note, 110, 9);
+      if (!(r.mask & (1 << seqPos))) return;
+      const ch = (r.chan === undefined) ? 9 : r.chan;
+      playNote(r.note, 110, ch);
+      if (ch !== 9) seqHeld.push(r.note);
     });
     seqPos = (seqPos + 1) % seqLen;
     seqNextAt += 60000 / seqBpm / 4;
@@ -1608,7 +1641,16 @@ const SEQ_PATTERNS = {
   'Tom Roll': { LoTom:[0,2,4,6], HiTom:[8,10,12,14], Crash:[0] }
 };
 
+// One row per semitone, highest at the top so it reads like a piano roll.
+const NOTE_ROW_NAMES = ['B','A#','A','G#','G','F#','F','E','D#','D','C#','C'];
+const NOTE_SEMIS     = [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
+const NOTE_BASE = 48;                       // C3 at octave 0
+let noteOct = 0;
+let seqLength = SEQ_STEPS;
+
 let seqGrid = SEQ_ROWS.map(() => new Array(SEQ_STEPS).fill(false));
+let noteGrid = NOTE_SEMIS.map(() => new Array(SEQ_STEPS).fill(false));
+let noteCells = [];
 let seqPlaying = false;
 let seqCells = [];             // cached elements: querying 128 cells per step was wasteful
 let seqLastPainted = -1;
@@ -1616,11 +1658,78 @@ let seqLastPainted = -1;
 // Rows are handed to the engine as a 16-bit mask each, which is all the
 // timing side needs to know about the pattern.
 function seqRowsForEngine(){
-  return SEQ_ROWS.map((r, ri) => {
+  const rows = SEQ_ROWS.map((r, ri) => {
     let mask = 0;
     for (let s = 0; s < SEQ_STEPS; s++) if (seqGrid[ri][s]) mask |= (1 << s);
-    return { note: r.note, mask };
+    return { note: r.note, mask, chan: 9 };
   });
+  // Pitch rows follow, on channel 0, so they go through the melodic voices
+  // and get a note-off rather than being one-shots like the drums.
+  NOTE_SEMIS.forEach((semi, ri) => {
+    let mask = 0;
+    for (let s = 0; s < SEQ_STEPS; s++) if (noteGrid[ri][s]) mask |= (1 << s);
+    rows.push({ note: noteNoteFor(ri), mask, chan: 0 });
+  });
+  return rows;
+}
+
+function noteNoteFor(ri){
+  return Math.max(24, Math.min(96, NOTE_BASE + NOTE_SEMIS[ri] + noteOct * 12));
+}
+
+function showNoteRange(){
+  const el = document.getElementById('noteRange');
+  if (!el) return;
+  const lo = NOTE_BASE + noteOct * 12;
+  el.textContent = noteName(Math.max(24, Math.min(96, lo))) + ' \u2013 ' +
+                   noteName(Math.max(24, Math.min(96, lo + 11)));
+}
+
+// Steps beyond the pattern length are dimmed rather than removed, so
+// shortening a pattern does not throw away what was drawn past the end.
+function paintLength(){
+  document.querySelectorAll('.step').forEach(c => {
+    c.classList.toggle('past', (c.dataset.s | 0) >= seqLength);
+  });
+  document.querySelectorAll('.seqhead div').forEach((d, i) => {
+    d.style.opacity = i >= seqLength ? '0.28' : '';
+  });
+}
+
+function buildNoteSequencer(){
+  const host = document.getElementById('noteRows');
+  if (!host) return;
+  NOTE_ROW_NAMES.forEach((name, ri) => {
+    const row = document.createElement('div');
+    row.className = 'seqrow' + (name.indexOf('#') >= 0 ? ' sharprow' : '');
+    const nm = document.createElement('div');
+    nm.className = 'seqname'; nm.textContent = name;
+    nm.onclick = () => playNote(noteNoteFor(ri), 100, 0);
+    row.appendChild(nm);
+    noteCells[ri] = [];
+    for (let si = 0; si < SEQ_STEPS; si++){
+      const c = document.createElement('div');
+      c.className = 'step note' + (si % 4 === 0 ? ' beat' : '');
+      c.dataset.r = ri; c.dataset.s = si;
+      c.addEventListener('pointerdown', e => {
+        e.preventDefault();
+        noteGrid[ri][si] = !noteGrid[ri][si];
+        c.classList.toggle('on', noteGrid[ri][si]);
+        if (noteGrid[ri][si]) playNote(noteNoteFor(ri), 100, 0);
+        seqEnginePattern(seqRowsForEngine());
+      });
+      noteCells[ri][si] = c;
+      row.appendChild(c);
+    }
+    host.appendChild(row);
+  });
+
+  makeOctave('noteOct', () => noteOct, v => {
+    noteOct = v;
+    showNoteRange();
+    seqEnginePattern(seqRowsForEngine());
+  }, -2, 2);
+  showNoteRange();
 }
 
 function buildSequencer(){
@@ -1667,6 +1776,29 @@ function buildSequencer(){
   });
   sel.onchange = () => loadPattern(sel.value);
 
+  const lenSel = document.getElementById('seqLen');
+  if (lenSel){
+    for (let n = 1; n <= SEQ_STEPS; n++){
+      const o = document.createElement('option');
+      o.value = n; o.textContent = n + ' step' + (n > 1 ? 's' : '');
+      lenSel.appendChild(o);
+    }
+    lenSel.value = seqLength;
+    lenSel.onchange = () => {
+      seqLength = parseInt(lenSel.value, 10) || SEQ_STEPS;
+      paintLength();
+      if (seqPlaying){        // restart the clock on the new length
+        seqEngineStop();
+        seqEngineStart(parseInt(document.getElementById('seqTempo').value, 10) || 110, seqLength);
+      }
+      try { localStorage.setItem('8b8.seqLen', seqLength); } catch(e){}
+    };
+    try {
+      const saved = localStorage.getItem('8b8.seqLen');
+      if (saved){ seqLength = parseInt(saved, 10) || SEQ_STEPS; lenSel.value = seqLength; }
+    } catch(e){}
+  }
+
   const tempo = document.getElementById('seqTempo');
   tempo.oninput = () => {
     document.getElementById('seqBpm').textContent = tempo.value + ' BPM';
@@ -1676,8 +1808,10 @@ function buildSequencer(){
   document.getElementById('seqPlay').onclick = toggleSeq;
   document.getElementById('seqClear').onclick = () => loadPattern('Empty');
 
+  buildNoteSequencer();
   loadPattern('Four/Four');
   document.getElementById('seqPreset').value = 'Four/Four';
+  paintLength();
   requestAnimationFrame(paintPlayhead);
 }
 
@@ -1692,10 +1826,14 @@ function paintSeq(){
 function paintPlayhead(){
   const step = seqPlaying ? seqEngineStep() : -1;
   if (step !== seqLastPainted){
-    if (seqLastPainted >= 0)
+    if (seqLastPainted >= 0){
       for (let r = 0; r < seqCells.length; r++) seqCells[r][seqLastPainted].classList.remove('playing');
-    if (step >= 0)
+      for (let r = 0; r < noteCells.length; r++) noteCells[r][seqLastPainted].classList.remove('playing');
+    }
+    if (step >= 0){
       for (let r = 0; r < seqCells.length; r++) seqCells[r][step].classList.add('playing');
+      for (let r = 0; r < noteCells.length; r++) noteCells[r][step].classList.add('playing');
+    }
     seqLastPainted = step;
   }
   requestAnimationFrame(paintPlayhead);
@@ -1721,7 +1859,7 @@ function toggleSeq(){
     seqPlaying = false; btn.textContent = 'Play';
   } else {
     seqEnginePattern(seqRowsForEngine());
-    seqEngineStart(bpm, SEQ_STEPS);
+    seqEngineStart(bpm, seqLength);
     seqPlaying = true; btn.textContent = 'Stop';
   }
 }

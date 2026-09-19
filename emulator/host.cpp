@@ -59,8 +59,12 @@ static double  dcPrev = 0.0, dcOut = 0.0;
 // mercy of the main thread, and on this page the audio callback IS on the
 // main thread. Counting samples inside the render makes the beat exact: a
 // step lands on the sample it should, no matter what the browser is doing.
-static uint16_t seqMask[16];        // one bit per step
-static uint8_t  seqNote[16];
+#define SEQ_MAX_ROWS 32
+static uint16_t seqMask[SEQ_MAX_ROWS];     // one bit per step
+static uint8_t  seqNote[SEQ_MAX_ROWS];
+static uint8_t  seqChan[SEQ_MAX_ROWS];     // 9 = percussion, else melodic
+static double   seqGateLeft[SEQ_MAX_ROWS]; // samples until note-off, 0 = idle
+static uint8_t  seqGateNote[SEQ_MAX_ROWS];
 static int      seqRows = 0, seqSteps = 16, seqCurStep = 0;
 static bool     seqRunning = false;
 static double   seqSamplesPerStep = 0.0, seqAcc = 0.0;
@@ -82,6 +86,8 @@ void emu_init(double rate) {
   for (int i = 0; i < 3; i++) chips[i].reset();
   seqRunning = false; seqRows = 0; seqCurStep = 0; seqAcc = 0.0;
   memset(seqMask, 0, sizeof seqMask);
+  memset(seqChan, 9, sizeof seqChan);
+  memset(seqGateLeft, 0, sizeof seqGateLeft);
   setup();
   started = true;
 }
@@ -107,12 +113,33 @@ void emu_render(float *out, int n) {
 
     // Fire sequencer steps on their exact sample.
     if (seqRunning && seqSamplesPerStep > 0.0) {
+      // Melodic steps need releasing; percussion is a one-shot and does not.
+      for (int r = 0; r < seqRows; r++) {
+        if (seqGateLeft[r] > 0.0) {
+          seqGateLeft[r] -= 1.0;
+          if (seqGateLeft[r] <= 0.0) {
+            seqGateLeft[r] = 0.0;
+            MidiUSB.push(midiEventPacket_t{0x08, (uint8_t)(0x80 | (seqChan[r] & 0x0F)),
+                                           seqGateNote[r], 0});
+          }
+        }
+      }
+
       seqAcc += 1.0;
       if (seqAcc >= seqSamplesPerStep) {
         seqAcc -= seqSamplesPerStep;
         for (int r = 0; r < seqRows; r++) {
-          if (seqMask[r] & (1u << seqCurStep)) {
-            MidiUSB.push(midiEventPacket_t{0x09, 0x99, seqNote[r], 110});
+          if (!(seqMask[r] & (1u << seqCurStep))) continue;
+          const uint8_t ch = seqChan[r] & 0x0F;
+          MidiUSB.push(midiEventPacket_t{0x09, (uint8_t)(0x90 | ch), seqNote[r], 110});
+          if (ch != 9) {
+            // Release any note this row is still holding before re-striking,
+            // then gate the new one at 60% of a step so repeats articulate.
+            if (seqGateLeft[r] > 0.0) {
+              MidiUSB.push(midiEventPacket_t{0x08, (uint8_t)(0x80 | ch), seqGateNote[r], 0});
+            }
+            seqGateNote[r] = seqNote[r];
+            seqGateLeft[r] = seqSamplesPerStep * 0.6;
           }
         }
         seqCurStep = (seqCurStep + 1) % seqSteps;
@@ -136,16 +163,18 @@ void emu_render(float *out, int n) {
 }
 
 // ---- sequencer -------------------------------------------------------------
-void emu_seq_row(int row, int note, int mask) {
-  if (row < 0 || row >= 16) return;
+void emu_seq_row(int row, int note, int mask, int chan) {
+  if (row < 0 || row >= SEQ_MAX_ROWS) return;
   seqNote[row] = (uint8_t)note;
   seqMask[row] = (uint16_t)mask;
+  seqChan[row] = (uint8_t)chan;
   if (row + 1 > seqRows) seqRows = row + 1;
 }
 
 void emu_seq_start(double bpm, int steps) {
   if (bpm < 20.0) bpm = 20.0;
   seqSteps = (steps > 0 && steps <= 16) ? steps : 16;
+  for (int r = 0; r < SEQ_MAX_ROWS; r++) seqGateLeft[r] = 0.0;
   seqSamplesPerStep = sampleRate * 60.0 / bpm / 4.0;   // sixteenth notes
   seqCurStep = 0;
   seqAcc = 0.0;
@@ -157,7 +186,17 @@ void emu_seq_tempo(double bpm) {
   seqSamplesPerStep = sampleRate * 60.0 / bpm / 4.0;
 }
 
-void emu_seq_stop() { seqRunning = false; }
+void emu_seq_stop() {
+  seqRunning = false;
+  // Release anything still held, or a melodic row would hang on stop.
+  for (int r = 0; r < seqRows; r++) {
+    if (seqGateLeft[r] > 0.0) {
+      MidiUSB.push(midiEventPacket_t{0x08, (uint8_t)(0x80 | (seqChan[r] & 0x0F)),
+                                     seqGateNote[r], 0});
+      seqGateLeft[r] = 0.0;
+    }
+  }
+}
 
 int emu_seq_step() { return seqRunning ? seqCurStep : -1; }
 
