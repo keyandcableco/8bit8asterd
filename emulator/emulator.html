@@ -216,6 +216,20 @@
     text-align:center;
   }
 
+  /* ---- Custom scale degrees ---- */
+  .degrees{ display:flex; gap:4px; flex-wrap:wrap; padding:0 13px 12px; }
+  .degrees .deg{
+    font-family:var(--pixel); font-size:calc(6px * var(--ui-scale));
+    padding:9px 0; width:38px; text-align:center; cursor:pointer;
+    background:var(--slot); border:2px solid var(--bezel); color:var(--text-dim);
+    user-select:none;
+  }
+  .degrees .deg.on{ background:var(--accent); color:var(--on-accent); }
+  .degrees .note{
+    font-family:var(--mono); font-size:calc(10px * var(--ui-scale));
+    color:var(--text-dim); align-self:center; margin-left:6px;
+  }
+
   /* ---- Octave steppers ---- */
   .oct{ display:flex; align-items:center; gap:0; flex:none; }
   .oct button{
@@ -252,13 +266,30 @@
   .chordbtn.down, .chordbtn.latched{ background:var(--accent); color:var(--on-accent); }
 
   .strum{
-    flex:0 0 120px; display:flex; flex-direction:column; gap:2px;
-    touch-action:none; min-height:260px;
+    flex:0 0 120px; display:flex; flex-direction:column; gap:1px;
+    touch-action:none; min-height:300px;
   }
   .strum .seg{
-    flex:1; border:2px solid var(--bezel); cursor:pointer;
+    flex:1; border:1px solid var(--bezel); cursor:pointer;
     background:linear-gradient(90deg, var(--body-dark) 0%, var(--slot) 100%);
   }
+  /* Laid flat, the harp runs the full width under the matrix instead of
+     standing beside it, which suits a phone held upright. */
+  .strum.horiz{
+    flex:1 1 100%; flex-direction:row; min-height:0; height:92px;
+  }
+  .strum.horiz .seg{
+    background:linear-gradient(180deg, var(--body-dark) 0%, var(--slot) 100%);
+  }
+  .strum.horiz .label{ display:none; }
+  /* Grid: three across, like the minichord keymaster, which is far easier to
+     hit accurately on a phone than a thin strip. */
+  .strum.grid{
+    flex:1 1 100%; display:grid; grid-template-columns:repeat(3,1fr);
+    gap:3px; min-height:0; height:auto;
+  }
+  .strum.grid .seg{ min-height:42px; border:2px solid var(--bezel); }
+  .strum.grid .label{ display:none; }
   .strum .seg.lit{ background:var(--accent); }
   .strum .label{
     font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
@@ -591,6 +622,22 @@
         <div class="cc">
           <div class="switch" id="stackSw"><div class="led"></div></div>
           <span class="cc-label">Stack</span>
+        </div>
+        <div class="cc">
+          <select id="harpModeSel"></select>
+          <span class="cc-label">Harp</span>
+        </div>
+        <div class="cc">
+          <select id="harpKeySel"></select>
+          <span class="cc-label">Key</span>
+        </div>
+        <div class="cc">
+          <select id="strumDirSel">
+            <option value="v">Vertical</option>
+            <option value="h">Horizontal</option>
+            <option value="grid">Grid</option>
+          </select>
+          <span class="cc-label">Layout</span>
         </div>
         <div class="cc">
           <div class="oct" id="chordOct"></div>
@@ -1218,7 +1265,103 @@ const CHORDS = {
   '12':  { tones: [0,3,7,10], suffix: 'm7'    },
   '012': { tones: [0,4,8],    suffix: 'aug'   }
 };
-const STRUM_SEGMENTS = 12;
+// ---- Harp modes -----------------------------------------------------------
+// Follows the scale modes I wrote for the minichord (upstream PR #125). The
+// chord mode is the original behaviour: the strings ARE the chord, which is
+// ideal for arpeggios but leaves nothing to play against it. The scale modes
+// change what the strings are, so you can run up and down them freely while
+// the chords move underneath and never land on a wrong note.
+const SCALES = {
+  ionian:      [0,2,4,5,7,9,11],
+  lydian:      [0,2,4,6,7,9,11],
+  mixolydian:  [0,2,4,5,7,9,10],
+  dorian:      [0,2,3,5,7,9,10],
+  aeolian:     [0,2,3,5,7,8,10],
+  harmMinor:   [0,2,3,5,7,8,11],
+  octatonic:   [0,2,3,5,6,8,9,11],   // whole-half, fits a diminished chord
+  wholeTone:   [0,2,4,6,8,10],
+  majSixthDim: [0,2,4,5,7,8,9,11],   // Barry Harris major sixth diminished
+  minSixthDim: [0,2,3,5,7,8,9,11],   // and its minor counterpart
+  majPent:     [0,2,4,7,9],
+  minPent:     [0,3,5,7,10],
+  domPent:     [0,2,4,7,10],
+  dimPent:     [0,3,6,9,10]
+};
+
+// Mode 8: the mapping a jazz player would use, chosen from the chord type and
+// rooted on the chord's own root rather than the key.
+const CHORD_SCALE = {
+  '0':   'ionian',     '02':  'lydian',   '2':   'mixolydian',
+  '12':  'dorian',     '1':   'aeolian',  '01':  'octatonic',
+  '012': 'wholeTone'
+};
+const CHORD_SCALE_BARRY = { '0': 'majSixthDim', '1': 'minSixthDim', '01': 'octatonic' };
+// Mode 9: the same idea with pentatonics, which removes the semitones.
+const CHORD_PENT = {
+  '0':   'majPent',  '02': 'majPent', '2':   'domPent',
+  '12':  'minPent',  '1':  'minPent', '01':  'dimPent',
+  '012': 'wholeTone'
+};
+
+// Modes 1-7 ignore the chord and sit on the key. The "relative" ones root on
+// the relative minor, nine semitones up.
+const HARP_MODES = [
+  { name: 'Chord tones',      kind: 'chord'                                  },
+  { name: 'Major',            kind: 'key',  scale: 'ionian'                  },
+  { name: 'Major pentatonic', kind: 'key',  scale: 'majPent'                 },
+  { name: 'Minor pentatonic', kind: 'key',  scale: 'minPent'                 },
+  { name: 'Diminished 6th',   kind: 'key',  scale: 'majSixthDim'             },
+  { name: 'Rel. nat. minor',  kind: 'key',  scale: 'aeolian',   offset: 9    },
+  { name: 'Rel. harm. minor', kind: 'key',  scale: 'harmMinor', offset: 9    },
+  { name: 'Rel. min. pent.',  kind: 'key',  scale: 'minPent',   offset: 9    },
+  { name: 'Scale per chord',  kind: 'perChord'                               },
+  { name: 'Pentatonic/chord', kind: 'perChordPent'                           },
+  { name: 'Custom on key',    kind: 'customKey'                              },
+  { name: 'Custom on chord',  kind: 'customChord'                            }
+];
+
+const DEGREE_NAMES = ['1','b2','2','b3','3','4','b5','5','b6','6','b7','7'];
+
+let harpMode = 0;
+let harpKey = 0;                       // 0 = C
+let customMask = 0b101010110101;       // a major scale to start from
+let strumHorizontal = false;
+let strumLayout = 'v';                 // v | h | grid
+
+// Chord tones give four notes an octave, so twelve strings cover three
+// octaves. A seven-note scale would only reach a octave and a half in twelve,
+// so the scale modes get twenty-four and land in much the same range.
+function strumCount(){ return HARP_MODES[harpMode].kind === 'chord' ? 12 : 24; }
+
+// Returns { tones, root } -- the interval list and the pitch class it starts
+// from, which is the chord root in some modes and the key in others.
+function harpScaleFor(){
+  const m = HARP_MODES[harpMode];
+  const spec = chordSpec();
+  const chordRoot = (ROOTS[activeRoot][1] + (sharpOn ? 1 : 0)) % 12;
+
+  if (m.kind === 'chord'){
+    if (!spec) return null;
+    return { tones: spec.tones.length === 3 ? spec.tones.concat([9]) : spec.tones,
+             root: chordRoot };
+  }
+  if (m.kind === 'key'){
+    return { tones: SCALES[m.scale], root: (harpKey + (m.offset || 0)) % 12 };
+  }
+  if (m.kind === 'perChord' || m.kind === 'perChordPent'){
+    const key = currentKey();
+    if (!key) return null;
+    const table = m.kind === 'perChordPent' ? CHORD_PENT
+                : (barryOn && CHORD_SCALE_BARRY[key] ? CHORD_SCALE_BARRY : CHORD_SCALE);
+    const name = table[key] || CHORD_SCALE[key] || 'ionian';
+    return { tones: SCALES[name], root: chordRoot };
+  }
+  // Custom: a twelve bit mask, one bit per chromatic degree.
+  const tones = [];
+  for (let i = 0; i < 12; i++) if (customMask & (1 << i)) tones.push(i);
+  if (!tones.length) return null;
+  return { tones, root: m.kind === 'customKey' ? harpKey : chordRoot };
+}
 
 let sharpOn = false, latchOn = false, barryOn = false, stackOn = false;
 let gestureRows = null;   // rows added by the current press-and-drag
@@ -1323,24 +1466,27 @@ function chordFor(){
 // The harp: chord tones stacked upward until twelve sections are filled, so
 // a strum walks the chord rather than a scale.
 function ladderFor(){
-  const spec = chordSpec();
-  if (!spec) return [];
-  // A three-note chord stacked twelve deep spans four octaves and runs out
-  // of room at the top of the note table, leaving the octave control with
-  // nowhere to go. Padding triads to four notes makes the ladder three
-  // octaves instead. The padding note is the sixth rather than the octave:
-  // the octave would land on the same pitch as the next repeat's root and
-  // stall the ladder, and a sixth is a harp-ish colour in any case.
-  const tones = spec.tones.length === 3 ? spec.tones.concat([9]) : spec.tones;
-  const base = ROOTS[activeRoot][1] + (sharpOn ? 1 : 0) - 12 + strumOct * 12;
+  const sc = harpScaleFor();
+  if (!sc) return [];
+  const n = strumCount();
+  const tones = sc.tones;
+
+  // Start an octave below the chord so there is room to climb, aligned to the
+  // scale's own root rather than the chord's.
+  const anchor = ROOTS[activeRoot][1] + (sharpOn ? 1 : 0) - 12 + strumOct * 12;
+  let base = Math.floor(anchor / 12) * 12 + sc.root;
+  if (base > anchor) base -= 12;
+
   let out = [];
-  for (let i = 0; i < STRUM_SEGMENTS; i++){
+  for (let i = 0; i < n; i++){
     out.push(base + tones[i % tones.length] + 12 * Math.floor(i / tones.length));
   }
-  // The firmware's note table covers MIDI 24..96, and anything past the top
-  // would clamp onto one pitch, so drop the ladder by octaves until it fits.
-  while (Math.max.apply(null, out) > 96) out = out.map(n => n - 12);
-  while (Math.min.apply(null, out) < 24) out = out.map(n => n + 12);
+  // A very short custom scale would otherwise climb an octave per string and
+  // run off the top of the note table, so the octave is capped and the upper
+  // strings repeat instead.
+  while (Math.max.apply(null, out) > 96) out = out.map(x => x - 12);
+  while (Math.min.apply(null, out) < 24) out = out.map(x => x + 12);
+  out = out.map(x => Math.max(24, Math.min(96, x)));
   return out;
 }
 
@@ -1394,6 +1540,45 @@ function paintChords(){
     const on = (b.dataset.root | 0) === activeRoot && key.indexOf(String(b.dataset.q)) >= 0;
     b.classList.toggle('latched', on && latchOn);
     b.classList.toggle('down', on && !latchOn);
+  });
+}
+
+// Vertical runs high at the top, like a harp stood on end; horizontal runs
+// low at the left, like a keyboard. Rebuilt on a change rather than reversed
+// with CSS, so the segment order always matches what is under the finger.
+function buildStrumSegments(){
+  const strum = document.getElementById('strum');
+  if (!strum) return;
+  const n = strumCount();
+  strum.innerHTML = '';
+  strum.classList.toggle('horiz', strumLayout === 'h');
+  strum.classList.toggle('grid', strumLayout === 'grid');
+  if (strumLayout === 'v'){
+    const lbl = document.createElement('div');
+    lbl.className = 'label'; lbl.textContent = 'STRUM';
+    strum.appendChild(lbl);
+  }
+
+  // Vertical runs high at the top like a harp stood on end. Horizontal runs
+  // low at the left like a keyboard. The grid fills bottom-left upward, so a
+  // sweep left to right rises and then carries on in the row above.
+  const order = [];
+  if (strumLayout === 'v'){
+    for (let i = n - 1; i >= 0; i--) order.push(i);
+  } else if (strumLayout === 'h'){
+    for (let i = 0; i < n; i++) order.push(i);
+  } else {
+    const rows = Math.ceil(n / 3);
+    for (let r = rows - 1; r >= 0; r--)
+      for (let c = 0; c < 3; c++){
+        const i = r * 3 + c;
+        if (i < n) order.push(i);
+      }
+  }
+  order.forEach(i => {
+    const seg = document.createElement('div');
+    seg.className = 'seg'; seg.dataset.seg = i;
+    strum.appendChild(seg);
   });
 }
 
@@ -1469,16 +1654,8 @@ function buildPlaySurface(){
     });
   });
 
-  // Strumpad: twelve sections, highest note at the top.
   const strum = document.getElementById('strum');
-  const lbl = document.createElement('div');
-  lbl.className = 'label'; lbl.textContent = 'STRUM';
-  strum.appendChild(lbl);
-  for (let i = STRUM_SEGMENTS - 1; i >= 0; i--){
-    const seg = document.createElement('div');
-    seg.className = 'seg'; seg.dataset.seg = i;
-    strum.appendChild(seg);
-  }
+  buildStrumSegments();
 
   function hit(seg, el){
     if (seg === lastStrumSeg) return;      // only on crossing into a new one
@@ -1525,6 +1702,99 @@ function buildPlaySurface(){
     if (!latchOn){ heldRows.clear(); releaseChord(); strumNotes = []; soundingKey = null; }
     paintChords();
   };
+  const dirSel = document.getElementById('strumDirSel');
+  if (dirSel){
+    dirSel.onchange = () => {
+      strumLayout = dirSel.value;
+      strumHorizontal = strumLayout === 'h';
+      buildStrumSegments();
+      try { localStorage.setItem('8b8.strumDir', strumLayout); } catch(e){}
+    };
+    try {
+      const saved = localStorage.getItem('8b8.strumDir');
+      if (saved){ dirSel.value = saved; strumLayout = saved; strumHorizontal = saved === 'h'; }
+    } catch(e){}
+  }
+
+  const modeSel = document.getElementById('harpModeSel');
+  const keySel  = document.getElementById('harpKeySel');
+  const degHost = document.getElementById('customDegrees');
+
+  if (keySel){
+    NOTE_NAMES.forEach((nm, i) => {
+      const o = document.createElement('option');
+      o.value = i; o.textContent = nm;
+      keySel.appendChild(o);
+    });
+  }
+
+  function refreshHarp(){
+    const kind = HARP_MODES[harpMode].kind;
+    if (degHost) degHost.hidden = (kind !== 'customKey' && kind !== 'customChord');
+    if (keySel) keySel.parentElement.style.opacity =
+      (kind === 'key' || kind === 'customKey') ? '' : '0.35';
+    buildStrumSegments();
+    if (currentKey() || kind === 'key' || kind === 'customKey') strumNotes = ladderFor();
+  }
+
+  if (modeSel){
+    HARP_MODES.forEach((m, i) => {
+      const o = document.createElement('option');
+      o.value = i; o.textContent = m.name;
+      modeSel.appendChild(o);
+    });
+    modeSel.onchange = () => {
+      harpMode = modeSel.value | 0;
+      try { localStorage.setItem('8b8.harpMode', harpMode); } catch(e){}
+      refreshHarp();
+    };
+  }
+  if (keySel){
+    keySel.onchange = () => {
+      harpKey = keySel.value | 0;
+      try { localStorage.setItem('8b8.harpKey', harpKey); } catch(e){}
+      refreshHarp();
+    };
+  }
+
+  if (degHost){
+    DEGREE_NAMES.forEach((nm, i) => {
+      const d = document.createElement('div');
+      d.className = 'deg' + ((customMask >> i) & 1 ? ' on' : '');
+      d.textContent = nm;
+      d.onclick = () => {
+        customMask ^= (1 << i);
+        d.classList.toggle('on', !!((customMask >> i) & 1));
+        cnt.textContent = countDegrees() + ' notes';
+        try { localStorage.setItem('8b8.customMask', customMask); } catch(e){}
+        refreshHarp();
+      };
+      degHost.appendChild(d);
+    });
+    var cnt = document.createElement('span');
+    cnt.className = 'note';
+    degHost.appendChild(cnt);
+  }
+  function countDegrees(){
+    let c = 0;
+    for (let i = 0; i < 12; i++) if ((customMask >> i) & 1) c++;
+    return c;
+  }
+
+  try {
+    const hm = localStorage.getItem('8b8.harpMode');
+    const hk = localStorage.getItem('8b8.harpKey');
+    const cm = localStorage.getItem('8b8.customMask');
+    if (cm !== null) customMask = parseInt(cm, 10) || customMask;
+    if (hm !== null && modeSel){ harpMode = hm | 0; modeSel.value = hm; }
+    if (hk !== null && keySel){ harpKey = hk | 0; keySel.value = hk; }
+  } catch(e){}
+  if (degHost){
+    degHost.querySelectorAll('.deg').forEach((d, i) => d.classList.toggle('on', !!((customMask >> i) & 1)));
+    cnt.textContent = countDegrees() + ' notes';
+  }
+  refreshHarp();
+
   const stackSw = document.getElementById('stackSw');
   if (stackSw) stackSw.onclick = () => {
     stackOn = !stackOn;
@@ -2123,11 +2393,13 @@ function gpDrums(hit){
 
 // Right stick vertical walks the strum ladder, so a flick sweeps the chord.
 function gpStrum(pad){
-  const y = pad.axes[3] || 0;
+  // Follow the on-screen orientation: push up on a vertical harp, right on a
+  // horizontal one.
+  const y = (strumHorizontal ? (pad.axes[2] || 0) : (pad.axes[3] || 0));
   if (Math.abs(y) < 0.12){ gpLastStrumSeg = -1; return; }
   if (!strumNotes.length) return;
-  const seg = Math.max(0, Math.min(STRUM_SEGMENTS - 1,
-    Math.floor((1 - (y + 1) / 2) * STRUM_SEGMENTS)));
+  const t = strumHorizontal ? (y + 1) / 2 : 1 - (y + 1) / 2;
+  const seg = Math.max(0, Math.min(strumCount() - 1, Math.floor(t * strumCount())));
   if (seg === gpLastStrumSeg) return;
   gpLastStrumSeg = seg;
   const n = strumNotes[seg];
