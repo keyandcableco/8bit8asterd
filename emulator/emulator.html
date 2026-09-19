@@ -589,6 +589,10 @@
           <span class="cc-label">Barry</span>
         </div>
         <div class="cc">
+          <div class="switch" id="stackSw"><div class="led"></div></div>
+          <span class="cc-label">Stack</span>
+        </div>
+        <div class="cc">
           <div class="oct" id="chordOct"></div>
           <span class="cc-label">Chord 8ve</span>
         </div>
@@ -1216,7 +1220,8 @@ const CHORDS = {
 };
 const STRUM_SEGMENTS = 12;
 
-let sharpOn = false, latchOn = false, barryOn = false;
+let sharpOn = false, latchOn = false, barryOn = false, stackOn = false;
+let gestureRows = null;   // rows added by the current press-and-drag
 let chordOct = 0, strumOct = 0, kbOct = 0;
 let inversion = 0, spacing = 0;
 
@@ -1409,13 +1414,57 @@ function buildPlaySurface(){
       b.className = 'chordbtn row' + qi;
       b.dataset.root = ri; b.dataset.q = qi;
       b.textContent = r[0] + q.suffix;
+      // A mouse has one pointer, so holding two buttons at once to build a
+      // maj7 is impossible, and on a touchscreen it means two fingers on
+      // small targets. Two ways round it, both single-pointer:
+      //   drag  -- press one row and slide onto others in the same column
+      //   Stack -- each tap adds or removes a row instead of replacing
       b.addEventListener('pointerdown', e => {
         e.preventDefault();
         b.setPointerCapture(e.pointerId);
+        if (stackOn){
+          if (heldRows.has(qi) && activeRoot === ri){
+            heldRows.delete(qi);
+            if (heldRows.size === 0){ soundingKey = null; releaseChord(); strumNotes = []; paintChords(); }
+            else { soundingKey = [...heldRows].sort().join(''); refreshChord(); }
+          } else {
+            pressRow(ri, qi);
+          }
+          return;
+        }
+        gestureRows = new Set([qi]);
         pressRow(ri, qi);
       });
-      b.addEventListener('pointerup', () => releaseRow(qi));
-      b.addEventListener('pointercancel', () => releaseRow(qi));
+
+      b.addEventListener('pointermove', e => {
+        if (stackOn || !gestureRows) return;
+        // Pointer capture keeps the events here, so look up what is under it.
+        const el = document.elementFromPoint(e.clientX, e.clientY);
+        const hit = el && el.closest ? el.closest('.chordbtn') : null;
+        if (!hit) return;
+        const r2 = hit.dataset.root | 0, q2 = hit.dataset.q | 0;
+        if (r2 !== activeRoot || gestureRows.has(q2)) return;
+        gestureRows.add(q2);
+        pressRow(r2, q2);
+      });
+
+      const endGesture = () => {
+        if (stackOn) return;              // taps persist until tapped again
+        if (gestureRows){
+          gestureRows.forEach(q => heldRows.delete(q));
+          gestureRows = null;
+        } else {
+          heldRows.delete(qi);
+        }
+        if (heldRows.size === 0 && !latchOn){
+          releaseChord();
+          strumNotes = [];
+          soundingKey = null;
+        }
+        paintChords();
+      };
+      b.addEventListener('pointerup', endGesture);
+      b.addEventListener('pointercancel', endGesture);
       grid.appendChild(b);
     });
   });
@@ -1476,6 +1525,23 @@ function buildPlaySurface(){
     if (!latchOn){ heldRows.clear(); releaseChord(); strumNotes = []; soundingKey = null; }
     paintChords();
   };
+  const stackSw = document.getElementById('stackSw');
+  if (stackSw) stackSw.onclick = () => {
+    stackOn = !stackOn;
+    stackSw.classList.toggle('active', stackOn);
+    if (!stackOn && !latchOn){
+      heldRows.clear(); soundingKey = null; releaseChord(); strumNotes = [];
+    }
+    gestureRows = null;
+    paintChords();
+    try { localStorage.setItem('8b8.stack', stackOn ? '1' : '0'); } catch(e){}
+  };
+  try {
+    if (localStorage.getItem('8b8.stack') === '1' && stackSw){
+      stackOn = true; stackSw.classList.add('active');
+    }
+  } catch(e){}
+
   const barrySw = document.getElementById('barrySw');
   if (barrySw) barrySw.onclick = () => {
     barryOn = !barryOn;
