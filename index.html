@@ -1312,21 +1312,26 @@ function strumCount(){ return HARP_MODES[harpMode].kind === 'chord' ? 12 : 24; }
 
 // Returns { tones, root } -- the interval list and the pitch class it starts
 // from, which is the chord root in some modes and the key in others.
+function harpKeyFor(){ return currentKey() || lastHarpKey; }
+
 function harpScaleFor(){
   const m = HARP_MODES[harpMode];
   const spec = chordSpec();
   const chordRoot = (ROOTS[activeRoot][1] + (sharpOn ? 1 : 0)) % 12;
 
   if (m.kind === 'chord'){
-    if (!spec) return null;
-    return { tones: spec.tones.length === 3 ? spec.tones.concat([9]) : spec.tones,
+    // Fall back to the last chord so the harp keeps its strings once the
+    // button is released.
+    const sp = spec || specForKey(lastHarpKey);
+    if (!sp) return null;
+    return { tones: sp.tones.length === 3 ? sp.tones.concat([9]) : sp.tones,
              root: chordRoot };
   }
   if (m.kind === 'key'){
     return { tones: SCALES[m.scale], root: (harpKey + (m.offset || 0)) % 12 };
   }
   if (m.kind === 'perChord' || m.kind === 'perChordPent'){
-    const key = currentKey();
+    const key = harpKeyFor();
     if (!key) return null;
     const table = m.kind === 'perChordPent' ? CHORD_PENT
                 : (barryOn && CHORD_SCALE_BARRY[key] ? CHORD_SCALE_BARRY : CHORD_SCALE);
@@ -1382,12 +1387,24 @@ let heldRows = new Set();         // rows physically held right now
 // key off this, otherwise changing octave or spacing under Hold does
 // nothing -- which is exactly when you would reach for them.
 let soundingKey = null;
+// The last chord the harp was built from. Kept after the button is released
+// so the strumpad stays playable without needing Hold on -- pressing a chord
+// primes the harp, and it stays primed until the next chord.
+let lastHarpKey = null;
 let chordNotes = [];
 let strumNotes = [];
 let lastStrumSeg = -1, strumming = false;
 
 function currentKey(){
   return heldRows.size ? [...heldRows].sort().join('') : soundingKey;
+}
+
+function specForKey(key){
+  const c = CHORDS[key];
+  if (!c) return null;
+  const useBarry = barryOn && c.barry;
+  return { tones: useBarry ? c.barry : c.tones,
+           suffix: useBarry ? c.bSuffix : c.suffix };
 }
 
 function chordSpec(){
@@ -1480,6 +1497,7 @@ function pressRow(rootIdx, rowIdx){
   if (rootIdx !== activeRoot){ heldRows.clear(); activeRoot = rootIdx; }
   heldRows.add(rowIdx);
   soundingKey = [...heldRows].sort().join('');
+  lastHarpKey = soundingKey;
   refreshChord();
 }
 
@@ -1487,8 +1505,8 @@ function releaseRow(rowIdx){
   heldRows.delete(rowIdx);
   if (heldRows.size === 0 && !latchOn){
     releaseChord();
-    strumNotes = [];
     soundingKey = null;
+    strumNotes = ladderFor();      // stays primed from lastHarpKey
   }
   paintChords();
 }
@@ -1620,8 +1638,8 @@ function buildPlaySurface(){
         }
         if (heldRows.size === 0 && !latchOn){
           releaseChord();
-          strumNotes = [];
           soundingKey = null;
+          strumNotes = ladderFor();
         }
         paintChords();
       };
@@ -1634,14 +1652,28 @@ function buildPlaySurface(){
   const strum = document.getElementById('strum');
   buildStrumSegments();
 
+  // The firmware ignores a note-on for a note that is already sounding, so
+  // plucking a string the held chord is already playing made no sound at all
+  // -- and its note-off, 400ms later, released the chord's note for good.
+  // That is the note "ceasing" when the harp covers it. For those, release
+  // and immediately restrike so the pluck is heard, and schedule nothing:
+  // the chord still holds the note, so it carries on afterwards.
+  function pluck(n){
+    if (chordNotes.indexOf(n) >= 0){
+      stopNote(n, 0);
+      playNote(n, 100, 0);
+      return;
+    }
+    playNote(n, 100, 0);
+    setTimeout(() => stopNote(n, 0), 400);   // plucked, not held
+  }
+
   function hit(seg, el){
     if (seg === lastStrumSeg) return;      // only on crossing into a new one
     lastStrumSeg = seg;
     if (!strumNotes.length) return;
     const n = strumNotes[seg];
-    playNote(n, 100, 0);
-    // The harp is plucked, not held: let the voice's own envelope end it.
-    setTimeout(() => stopNote(n, 0), 400);
+    pluck(n);
     el.classList.add('lit');
     setTimeout(() => el.classList.remove('lit'), 120);
   }
