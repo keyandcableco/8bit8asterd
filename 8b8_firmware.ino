@@ -1,3 +1,28 @@
+// 8-Bit 8asterd -- a nine-voice MIDI chiptune synthesiser for three
+// AY-3-8910 programmable sound generators driven by an Arduino Leonardo.
+//
+// Copyright (C) 2026 Greg Miller, The Key & Cable Company
+//
+// This program is free software: you can redistribute it and/or modify it
+// under the terms of the GNU General Public License as published by the Free
+// Software Foundation, either version 3 of the License, or (at your option)
+// any later version.
+//
+// This program is distributed in the hope that it will be useful, but
+// WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+// or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License
+// for more details. You should have received a copy of the GNU General
+// Public License along with this program. If not, see
+// <https://www.gnu.org/licenses/>.
+//
+// Derived from:
+//   Arduino MIDI Chiptune Synthesizer by Ian Harvey (TheSpodShed)
+//     https://www.instructables.com/Arduino-MIDI-Chiptune-Synthesizer/
+//   Dual AY-3-8910 MIDI module by Doge Microsystems
+//     https://dogemicrosystems.ca/wiki/Dual_AY-3-8910_MIDI_module
+// The reduced BC1-grounded control scheme, the note table and the original
+// voice-allocation approach come from that work.
+
 /*
  * The bulk of this firmware comes from: https://dogemicrosystems.ca/wiki/Dual_AY-3-8910_MIDI_module
  * 

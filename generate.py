@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+# 8-Bit 8asterd -- parameter bank generator.
+#
+# Copyright (C) 2026 Greg Miller, The Key & Cable Company
+#
+# This program is free software: you can redistribute it and/or modify it
+# under the terms of the GNU General Public License as published by the Free
+# Software Foundation, either version 3 of the License, or (at your option)
+# any later version. This program is distributed WITHOUT ANY WARRANTY; see
+# the GNU General Public License for more details:
+# <https://www.gnu.org/licenses/>.
+
 """
 8b8 parameter bank generator
 ============================
