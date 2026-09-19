@@ -804,13 +804,6 @@ HTML_TEMPLATE = r"""<!doctype html>
   .nav button.active{ background:var(--accent); color:var(--on-accent); }
   .section.hidden{ display:none; }
 
-  /* ---- MIDI port activity ---- */
-  .midi-dot{
-    width:9px; height:9px; flex:none; border-radius:50%;
-    background:var(--bezel); border:2px solid var(--body-lit);
-  }
-  .midi-dot.active{ background:var(--accent-lit); box-shadow:0 0 7px var(--accent); }
-
   /* ---- MIDI learn ---- */
   body.learning .ctl .name{ cursor:pointer; color:var(--warn); text-decoration:underline dotted; }
   body.learning .ctl .name:hover{ color:var(--accent-lit); }
@@ -1057,8 +1050,6 @@ __TRANSPORT_UI__
         </div>
       </div>
 
-      <div class="cc-row" id="midiRoutes"></div>
-
       <div class="play-wrap">
         <div class="matrix">
           <div class="cols" id="colHeads"></div>
@@ -1083,7 +1074,6 @@ __TRANSPORT_UI__
           <span class="readout" id="midiStatus">none</span>
           <span class="cc-label">MIDI In</span>
         </div>
-
       </div>
       <div class="piano-scroll"><div class="piano" id="piano"></div></div>
       <div class="pads" id="pads"></div>
@@ -1788,230 +1778,6 @@ function buildPlaySurface(){
   buildGamepad();
 }
 
-/* ---- MIDI chord detection ---- */
-// The minichord sends the NOTES of a chord, not which button was pressed, so
-// the only way to drive this matrix from it is to work out what the chord
-// was. In Chords mode the incoming notes are identified and the matching
-// matrix cell is pressed, which means the 8b8 applies its OWN octave,
-// inversion, spacing, Barry setting and temperament rather than echoing the
-// voicing it was sent.
-// Each MIDI input gets its own role, because a single device can present
-// several ports with different jobs: the minichord exposes one port for its
-// chord section and another for its harp. Roles are remembered by device
-// name, so a controller keeps its assignment across sessions.
-const MIDI_ROLES = [
-  ['notes',  'Notes'],      // plays through as sent; the strumpad follows it
-  ['chords', 'Re-voice'],   // identify the chord and press the matrix instead
-  ['harp',   'Harp'],       // pluck the strumpad
-  ['off',    'Off'],
-];
-const midiRoles = {};                  // device name -> role
-function midiRoleFor(name){
-  if (midiRoles[name]) return midiRoles[name];
-  try {
-    const saved = localStorage.getItem('8b8.role.' + name);
-    if (saved) return (midiRoles[name] = saved);
-  } catch(e){}
-  return 'notes';
-}
-function setMidiRole(name, role){
-  midiRoles[name] = role;
-  harpLo = harpHi = null;              // relearn the incoming range
-  try { localStorage.setItem('8b8.role.' + name, role); } catch(e){}
-  if (role !== 'chords') midiHeld.clear();
-}
-
-const midiHeld = new Set();
-let detectTimer = null;
-
-const DETECT = [];
-for (const key in CHORDS){
-  DETECT.push({ pcs: CHORDS[key].tones.map(t => t % 12), key, barry: false });
-  if (CHORDS[key].barry) DETECT.push({ pcs: CHORDS[key].barry.map(t => t % 12), key, barry: true });
-}
-
-const COL_PC = ROOTS.map(r => r[1] % 12);          // F C G D A E B
-
-// Every chromatic root is reachable: seven columns plus the sharp modifier.
-function rootToMatrix(pc){
-  let i = COL_PC.indexOf(pc);
-  if (i >= 0) return { col: i, sharp: false };
-  i = COL_PC.indexOf((pc + 11) % 12);
-  if (i >= 0) return { col: i, sharp: true };
-  return null;
-}
-
-function detectChord(){
-  const notes = [...midiHeld].sort((a, b) => a - b);
-  if (notes.length < 3) return null;
-  const pcs = [...new Set(notes.map(n => n % 12))].sort((a, b) => a - b).join();
-  const bass = notes[0] % 12;
-
-  let best = null;
-  for (const cand of DETECT){
-    // Sixths only exist on this matrix under Barry mode. With Barry off,
-    // reading a chord as a sixth would render it as a plain triad and drop a
-    // note, so prefer the reading that reproduces every note -- a minor
-    // seventh a third below is the same four pitches.
-    if (cand.barry && !barryOn) continue;
-    for (let root = 0; root < 12; root++){
-      const set = [...new Set(cand.pcs.map(t => (t + root) % 12))].sort((a, b) => a - b);
-      if (set.join() !== pcs) continue;
-      // m7 and maj6 are the same notes, and a diminished seventh is the same
-      // four notes from any of its members. The bass decides, which is right
-      // for the minichord since it voices chords in root position.
-      const score = (root === bass ? 4 : 0) + (cand.barry === barryOn ? 1 : 0);
-      if (!best || score > best.score) best = { root, key: cand.key, score };
-    }
-  }
-  return best;
-}
-
-const PC_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-let lastChordLog = '';
-
-function midiChordUpdate(){
-  const found = detectChord();
-
-  // Report what came in when nothing matches, because otherwise a chord the
-  // table does not know about is indistinguishable from the feature being
-  // broken -- it just silently does nothing.
-  if (!found && midiHeld.size >= 3){
-    const notes = [...midiHeld].sort((a, b) => a - b);
-    const sig = notes.join(',');
-    if (sig !== lastChordLog){
-      lastChordLog = sig;
-      const named = notes.map(n => PC_NAMES[n % 12] + (Math.floor(n / 12) - 1));
-      const pcs = [...new Set(notes.map(n => n % 12))].sort((a, b) => a - b);
-      log('err', 'No chord matched: ' + named.join(' ') +
-                 '  (' + pcs.length + ' pitch classes: ' +
-                 pcs.map(p => PC_NAMES[p]).join(' ') + ')');
-    }
-  } else if (found){
-    const sig = [...midiHeld].sort((a, b) => a - b).join(',');
-    if (sig !== lastChordLog){
-      lastChordLog = sig;
-      log('sys', 'Chord in: ' + PC_NAMES[found.root] + ' ' + found.key +
-                 ' from ' + midiHeld.size + ' notes');
-    }
-  }
-
-  if (!found){
-    if (midiHeld.size === 0 && !latchOn){
-      heldRows.clear(); soundingKey = null; releaseChord(); strumNotes = []; paintChords();
-    }
-    return;
-  }
-  const m = rootToMatrix(found.root);
-  if (!m) return;
-  activeRoot = m.col;
-  if (sharpOn !== m.sharp){
-    sharpOn = m.sharp;
-    const sw = document.getElementById('sharpSw');
-    if (sw) sw.classList.toggle('active', sharpOn);
-  }
-  heldRows = new Set(found.key.split('').map(Number));
-  soundingKey = found.key;
-  refreshChord();
-}
-
-// A harp note picks a string on the 8b8's OWN ladder, so the 8b8 plays its
-// own voicing rather than echoing the pitch it was sent.
-//
-// Matching by nearest pitch does not work: the two instruments cover
-// different registers, so everything above the top of this ladder collapses
-// onto its last string and a sweep stops moving. Instead the incoming range
-// is learned as it is played and mapped proportionally onto the twelve
-// strings, which makes a full sweep on one instrument a full sweep on the
-// other whatever register it arrives in. Until an octave has been seen there
-// is nothing to scale against, so it falls back to nearest pitch.
-let harpLo = null, harpHi = null;
-
-function harpPluck(note){
-  if (!strumNotes.length) return;
-  if (harpLo === null || note < harpLo) harpLo = note;
-  if (harpHi === null || note > harpHi) harpHi = note;
-
-  let best;
-  if (harpHi - harpLo >= 12){
-    const t = (note - harpLo) / (harpHi - harpLo);
-    best = Math.round(t * (strumNotes.length - 1));
-  } else {
-    best = 0;
-    let bd = 1e9;
-    for (let i = 0; i < strumNotes.length; i++){
-      const d = Math.abs(strumNotes[i] - note);
-      if (d < bd){ bd = d; best = i; }
-    }
-  }
-  best = Math.max(0, Math.min(strumNotes.length - 1, best));
-  const n = strumNotes[best];
-  playNote(n, 100, 0);
-  setTimeout(() => stopNote(n, 0), 400);
-  const el = document.querySelector('.strum .seg[data-seg="' + best + '"]');
-  if (el){ el.classList.add('lit'); setTimeout(() => el.classList.remove('lit'), 120); }
-}
-
-// Builds a harp ladder straight from whatever notes arrived, without naming
-// the chord at all. Chord identification can fail -- the matrix only knows
-// seven chord types, and an instrument may voice something outside them --
-// but stacking the pitch classes that actually arrived always works, and is
-// arguably more faithful anyway.
-function ladderFromNotes(notes){
-  if (!notes.length) return [];
-  const pcs = [...new Set(notes.map(n => n % 12))].sort((a, b) => a - b);
-  const low = Math.min.apply(null, notes);
-  const start = low - 12 + strumOct * 12;         // an octave below, as the matrix ladder does
-  const floor12 = Math.floor(start / 12) * 12;
-
-  let out = [];
-  for (let o = 0; o < 8 && out.length < STRUM_SEGMENTS; o++){
-    for (const pc of pcs){
-      const n = floor12 + pc + o * 12;
-      if (n < start) continue;
-      out.push(n);
-      if (out.length >= STRUM_SEGMENTS) break;
-    }
-  }
-  if (!out.length) return [];
-  while (Math.max.apply(null, out) > 96) out = out.map(n => n - 12);
-  while (Math.min.apply(null, out) < 24) out = out.map(n => n + 12);
-  return out;
-}
-
-// In Notes role the incoming chord is passed through untouched, but it also
-// quietly retunes the strumpad so the 8b8 harp follows what is being played.
-// Nothing here can fail to "match": if it is a chord, the harp follows it.
-let followTimer = null;
-function midiFollowUpdate(){
-  const notes = [...midiHeld].sort((a, b) => a - b);
-  if (notes.length >= 2) strumNotes = ladderFromNotes(notes);
-}
-
-function midiNote(on, note, vel, chan, role){
-  role = role || 'notes';
-  if (role === 'off') return;
-
-  if (role === 'harp'){
-    if (on) harpPluck(note);
-    return;
-  }
-
-  if (role !== 'chords' || chan === 9){
-    if (on) playNote(note, vel, chan); else stopNote(note, chan);
-    if (chan !== 9){
-      if (on) midiHeld.add(note); else midiHeld.delete(note);
-      clearTimeout(followTimer);
-      followTimer = setTimeout(midiFollowUpdate, 35);
-    }
-    return;
-  }
-  // Chords role: the notes are evidence, not something to play directly.
-  if (on) midiHeld.add(note); else midiHeld.delete(note);
-  clearTimeout(detectTimer);
-  detectTimer = setTimeout(midiChordUpdate, 35);   // let the chord settle
-}
-
 /* ---- Keyboard: two octaves of piano, plus drum pads ---- */
 // White keys carry the letter row; black keys sit over the gaps between
 // them, which is what makes it readable at a glance and on a phone.
@@ -2626,7 +2392,7 @@ SERIAL_TRANSPORT_UI = '        <button class="btn" id="connectBtn">Connect</butt
 
 WASM_TRANSPORT_UI = '        <button class="btn" id="startBtn">Start Audio</button>\n        <button class="btn danger" id="stopBtn" disabled>Stop</button>'
 
-WASM_TRANSPORT_JS = '/* ==== Emulated transport ================================================ */\n// The firmware itself, compiled to WebAssembly, driving three emulated\n// AY-3-8910s into Web Audio. The panel above is byte-identical to the one\n// that talks to real hardware over serial -- the only thing that changes is\n// what send() writes to. Same firmware, same parameters, same protocol.\n\nlet audioCtx = null, node = null, ready = false, pollTimer = null;\nconst HEAP_SAMPLES = 2048;\nlet heapPtr = 0;\n\nconst statusPill = document.getElementById(\'statusPill\');\nconst statusText = document.getElementById(\'statusText\');\nconst startBtn = document.getElementById(\'startBtn\');\nconst stopBtn  = document.getElementById(\'stopBtn\');\n\nfunction setStatus(mode, text){\n  statusPill.className = \'status-pill\' + (mode ? \' \' + mode : \'\');\n  statusText.textContent = text;\n}\n\nfunction send(cmd){\n  log(\'tx\',\'\\u00bb \' + cmd);\n  if (ready) Module.ccall(\'emu_send_line\', null, [\'string\'], [cmd]);\n}\n\nfunction pollReplies(){\n  if (!ready) return;\n  const s = Module.ccall(\'emu_read_lines\', \'string\', [], []);\n  if (!s) return;\n  for (const line of s.split(\'\\n\')) if (line.length) handleLine(line);\n}\n\nasync function startAudio(){\n  if (!window.Module || !Module.ccall){\n    log(\'err\',\'The emulator core has not loaded. Did you run build-wasm.sh?\');\n    setStatus(\'err\',\'No core\');\n    return;\n  }\n  audioCtx = new (window.AudioContext || window.webkitAudioContext)();\n  await audioCtx.resume();\n\n  Module.ccall(\'emu_init\', null, [\'number\'], [audioCtx.sampleRate]);\n  heapPtr = Module._malloc(HEAP_SAMPLES * 4);\n  ready = true;\n\n  node = audioCtx.createScriptProcessor(HEAP_SAMPLES, 0, 1);\n  node.onaudioprocess = (e) => {\n    const out = e.outputBuffer.getChannelData(0);\n    Module.ccall(\'emu_render\', null, [\'number\',\'number\'], [heapPtr, out.length]);\n    out.set(Module.HEAPF32.subarray(heapPtr >> 2, (heapPtr >> 2) + out.length));\n  };\n  node.connect(audioCtx.destination);\n\n  startBtn.disabled = true; stopBtn.disabled = false;\n  setStatus(\'on\',\'Running\');\n  log(\'sys\',\'Emulator running at \' + audioCtx.sampleRate + \'Hz.\');\n\n  pollTimer = setInterval(pollReplies, 60);\n  send(\'DUMP\');\n}\n\nfunction stopAudio(){\n  if (node) { node.disconnect(); node = null; }\n  if (audioCtx) { audioCtx.close(); audioCtx = null; }\n  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }\n  ready = false;\n  startBtn.disabled = false; stopBtn.disabled = true;\n  setStatus(\'\',\'Stopped\');\n}\n\nstartBtn.onclick = startAudio;\nstopBtn.onclick  = stopAudio;\n\n/* ---- playing it ---- */\nfunction playNote(note, vel, chan){\n  if (ready) Module.ccall(\'emu_note_on\', null, [\'number\',\'number\',\'number\'], [chan||0, note, vel||100]);\n}\nfunction stopNote(note, chan){\n  if (ready) Module.ccall(\'emu_note_off\', null, [\'number\',\'number\'], [chan||0, note]);\n}\n\n// Real MIDI hardware, if the browser offers it. Chrome, Edge, Opera and\n// Firefox 108+ have the Web MIDI API; Safari and iOS do not. It also needs a\n// secure context, so https or localhost.\nlet midiAccess = null;\n\nfunction attachMidiInput(inp, key){\n  inp.onmidimessage = m => {\n    const st = m.data[0], d1 = m.data[1], d2 = m.data[2];\n    const ch = st & 0x0F, cmd = st & 0xF0;\n    const role = midiRoleFor(key);\n    flashMidiRow(key);\n    if (cmd === 0x90 && d2 > 0) midiNote(true, d1, d2, ch, role);\n    else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) midiNote(false, d1, 0, ch, role);\n    else if (cmd === 0xB0 && ready && role !== \'off\'){\n      // Control changes go to the firmware exactly as they would on the\n      // hardware, so the CC map and MIDI Learn behave identically here.\n      Module.ccall(\'emu_cc\', null, [\'number\',\'number\',\'number\'], [ch, d1, d2]);\n    }\n  };\n}\n\n// One row per input, each with its own role. A minichord shows up as two\n// ports; set one to Chords and the other to Harp and the whole instrument\n// drives this one.\n// A dot next to each port that lights when a message arrives from it, which\n// is the quickest way to tell two identically named ports apart.\nfunction flashMidiRow(key){\n  const el = document.querySelector(\'[data-midikey="\' + CSS.escape(key) + \'"]\');\n  if (!el) return;\n  el.classList.add(\'active\');\n  clearTimeout(el._flash);\n  el._flash = setTimeout(() => el.classList.remove(\'active\'), 220);\n}\n\nfunction buildMidiRoutes(names){\n  const host = document.getElementById(\'midiRoutes\');\n  if (!host) return;\n  host.innerHTML = \'\';\n  if (!names.length){\n    const cc = document.createElement(\'div\');\n    cc.className = \'cc\';\n    cc.innerHTML = \'<span class="readout">no devices</span><span class="cc-label">MIDI Routing</span>\';\n    host.appendChild(cc);\n    return;\n  }\n  names.forEach(name => {\n    const cc = document.createElement(\'div\');\n    cc.className = \'cc\';\n    const dot = document.createElement(\'span\');\n    dot.className = \'midi-dot\';\n    dot.dataset.midikey = name;\n    const sel = document.createElement(\'select\');\n    MIDI_ROLES.forEach(([v, label]) => {\n      const o = document.createElement(\'option\');\n      o.value = v; o.textContent = label;\n      sel.appendChild(o);\n    });\n    sel.value = midiRoleFor(name);\n    sel.onchange = () => setMidiRole(name, sel.value);\n    const lab = document.createElement(\'span\');\n    lab.className = \'cc-label\';\n    lab.textContent = name.length > 22 ? name.slice(0, 22) + \'\\u2026\' : name;\n    const row = document.createElement(\'div\');\n    row.style.cssText = \'display:flex;align-items:center;gap:6px\';\n    row.appendChild(dot); row.appendChild(sel);\n    cc.appendChild(row); cc.appendChild(lab);\n    host.appendChild(cc);\n  });\n}\n\nfunction refreshMidiInputs(){\n  if (!midiAccess) return [];\n  // A device can present several ports under the SAME name -- the minichord\n  // has one for its chord section and one for its harp. Keying a role by\n  // name alone made them share one setting, so assigning Harp to one\n  // silently assigned it to both and nothing ever reached the chord\n  // detector. Each port gets its own key: name plus its position among\n  // ports of that name, which survives a reconnect as long as the order\n  // does.\n  const names = [], seen = {};\n  for (const inp of midiAccess.inputs.values()){\n    const name = inp.name || \'unnamed\';\n    const n = (seen[name] = (seen[name] || 0) + 1);\n    const key = n > 1 ? (name + \' #\' + n) : name;\n    attachMidiInput(inp, key);\n    names.push(key);\n  }\n  const el = document.getElementById(\'midiStatus\');\n  if (el) el.textContent = names.length ? (names.length + \' port\' + (names.length > 1 ? \'s\' : \'\')) : \'none\';\n  buildMidiRoutes(names);\n  return names;\n}\n\nif (navigator.requestMIDIAccess){\n  navigator.requestMIDIAccess().then(a => {\n    midiAccess = a;\n    // Controllers are routinely plugged in after the page is open, and\n    // without this they would simply never be heard from.\n    a.onstatechange = () => {\n      const n = refreshMidiInputs();\n      log(\'sys\', \'MIDI devices: \' + (n.length ? n.join(\', \') : \'none\'));\n    };\n    const n = refreshMidiInputs();\n    log(\'sys\', n.length ? (\'MIDI in: \' + n.join(\', \'))\n                        : \'MIDI ready \\u2014 no device found yet. Plug one in.\');\n  }).catch(e => log(\'err\', \'MIDI unavailable: \' + e.message));\n} else {\n  log(\'sys\', \'This browser has no Web MIDI. Chrome, Edge or Firefox 108+ do.\');\n}\n\n/* ---- sequencer engine: timed inside the audio render ---- */\n// Sample-counted in C++ rather than by setTimeout, because on this page the\n// audio callback runs on the main thread and any timer shares it. Measured\n// drift is about one sample over four seconds.\nfunction seqEnginePattern(rows){\n  if (!ready) return;\n  rows.forEach((r, i) => Module.ccall(\'emu_seq_row\', null,\n    [\'number\',\'number\',\'number\'], [i, r.note, r.mask]));\n}\nfunction seqEngineStart(bpm, steps){\n  if (!ready) return;\n  Module.ccall(\'emu_seq_start\', null, [\'number\',\'number\'], [bpm, steps]);\n}\nfunction seqEngineTempo(bpm){\n  if (ready) Module.ccall(\'emu_seq_tempo\', null, [\'number\'], [bpm]);\n}\nfunction seqEngineStop(){\n  if (ready) Module.ccall(\'emu_seq_stop\', null, [], []);\n}\nfunction seqEngineStep(){\n  return ready ? Module.ccall(\'emu_seq_step\', \'number\', [], []) : -1;\n}\n'
+WASM_TRANSPORT_JS = "/* ==== Emulated transport ================================================ */\n// The firmware itself, compiled to WebAssembly, driving three emulated\n// AY-3-8910s into Web Audio. The panel above is byte-identical to the one\n// that talks to real hardware over serial -- the only thing that changes is\n// what send() writes to. Same firmware, same parameters, same protocol.\n\nlet audioCtx = null, node = null, ready = false, pollTimer = null;\nconst HEAP_SAMPLES = 2048;\nlet heapPtr = 0;\n\nconst statusPill = document.getElementById('statusPill');\nconst statusText = document.getElementById('statusText');\nconst startBtn = document.getElementById('startBtn');\nconst stopBtn  = document.getElementById('stopBtn');\n\nfunction setStatus(mode, text){\n  statusPill.className = 'status-pill' + (mode ? ' ' + mode : '');\n  statusText.textContent = text;\n}\n\nfunction send(cmd){\n  log('tx','\\u00bb ' + cmd);\n  if (ready) Module.ccall('emu_send_line', null, ['string'], [cmd]);\n}\n\nfunction pollReplies(){\n  if (!ready) return;\n  const s = Module.ccall('emu_read_lines', 'string', [], []);\n  if (!s) return;\n  for (const line of s.split('\\n')) if (line.length) handleLine(line);\n}\n\nasync function startAudio(){\n  if (!window.Module || !Module.ccall){\n    log('err','The emulator core has not loaded. Did you run build-wasm.sh?');\n    setStatus('err','No core');\n    return;\n  }\n  audioCtx = new (window.AudioContext || window.webkitAudioContext)();\n  await audioCtx.resume();\n\n  Module.ccall('emu_init', null, ['number'], [audioCtx.sampleRate]);\n  heapPtr = Module._malloc(HEAP_SAMPLES * 4);\n  ready = true;\n\n  node = audioCtx.createScriptProcessor(HEAP_SAMPLES, 0, 1);\n  node.onaudioprocess = (e) => {\n    const out = e.outputBuffer.getChannelData(0);\n    Module.ccall('emu_render', null, ['number','number'], [heapPtr, out.length]);\n    out.set(Module.HEAPF32.subarray(heapPtr >> 2, (heapPtr >> 2) + out.length));\n  };\n  node.connect(audioCtx.destination);\n\n  startBtn.disabled = true; stopBtn.disabled = false;\n  setStatus('on','Running');\n  log('sys','Emulator running at ' + audioCtx.sampleRate + 'Hz.');\n\n  pollTimer = setInterval(pollReplies, 60);\n  send('DUMP');\n}\n\nfunction stopAudio(){\n  if (node) { node.disconnect(); node = null; }\n  if (audioCtx) { audioCtx.close(); audioCtx = null; }\n  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }\n  ready = false;\n  startBtn.disabled = false; stopBtn.disabled = true;\n  setStatus('','Stopped');\n}\n\nstartBtn.onclick = startAudio;\nstopBtn.onclick  = stopAudio;\n\n/* ---- playing it ---- */\nfunction playNote(note, vel, chan){\n  if (ready) Module.ccall('emu_note_on', null, ['number','number','number'], [chan||0, note, vel||100]);\n}\nfunction stopNote(note, chan){\n  if (ready) Module.ccall('emu_note_off', null, ['number','number'], [chan||0, note]);\n}\n\n// Real MIDI hardware, if the browser offers it. Chrome, Edge, Opera and\n// Firefox 108+ have the Web MIDI API; Safari and iOS do not. It also needs a\n// secure context, so https or localhost.\nlet midiAccess = null;\n\nfunction attachMidiInput(inp){\n  inp.onmidimessage = m => {\n    const st = m.data[0], d1 = m.data[1], d2 = m.data[2];\n    const ch = st & 0x0F, cmd = st & 0xF0;\n    if (cmd === 0x90 && d2 > 0) playNote(d1, d2, ch);\n    else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) stopNote(d1, ch);\n    else if (cmd === 0xB0 && ready){\n      // Control changes go to the firmware exactly as they would on the\n      // hardware, so the CC map and MIDI Learn behave identically here.\n      Module.ccall('emu_cc', null, ['number','number','number'], [ch, d1, d2]);\n    }\n  };\n}\n\nfunction refreshMidiInputs(){\n  if (!midiAccess) return [];\n  const names = [];\n  for (const inp of midiAccess.inputs.values()){\n    attachMidiInput(inp);\n    names.push(inp.name || 'unnamed');\n  }\n  const el = document.getElementById('midiStatus');\n  if (el) el.textContent = names.length ? names[0].slice(0, 18) : 'none';\n  return names;\n}\n\nif (navigator.requestMIDIAccess){\n  navigator.requestMIDIAccess().then(a => {\n    midiAccess = a;\n    // Controllers are routinely plugged in after the page is open, and\n    // without this they would simply never be heard from.\n    a.onstatechange = () => {\n      const n = refreshMidiInputs();\n      log('sys', 'MIDI devices: ' + (n.length ? n.join(', ') : 'none'));\n    };\n    const n = refreshMidiInputs();\n    log('sys', n.length ? ('MIDI in: ' + n.join(', '))\n                        : 'MIDI ready \\u2014 no device found yet. Plug one in.');\n  }).catch(e => log('err', 'MIDI unavailable: ' + e.message));\n} else {\n  log('sys', 'This browser has no Web MIDI. Chrome, Edge or Firefox 108+ do.');\n}\n\n/* ---- sequencer engine: timed inside the audio render ---- */\n// Sample-counted in C++ rather than by setTimeout, because on this page the\n// audio callback runs on the main thread and any timer shares it. Measured\n// drift is about one sample over four seconds.\nfunction seqEnginePattern(rows){\n  if (!ready) return;\n  rows.forEach((r, i) => Module.ccall('emu_seq_row', null,\n    ['number','number','number'], [i, r.note, r.mask]));\n}\nfunction seqEngineStart(bpm, steps){\n  if (!ready) return;\n  Module.ccall('emu_seq_start', null, ['number','number'], [bpm, steps]);\n}\nfunction seqEngineTempo(bpm){\n  if (ready) Module.ccall('emu_seq_tempo', null, ['number'], [bpm]);\n}\nfunction seqEngineStop(){\n  if (ready) Module.ccall('emu_seq_stop', null, [], []);\n}\nfunction seqEngineStep(){\n  return ready ? Module.ccall('emu_seq_step', 'number', [], []) : -1;\n}\n"
 
 EMU_EXTRA_HEAD = '<script>var Module = { onRuntimeInitialized: function(){ if (window.onCoreReady) window.onCoreReady(); } };</script>\n<script src="8b8.js"></script>'
 

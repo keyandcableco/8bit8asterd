@@ -362,13 +362,6 @@
   .nav button.active{ background:var(--accent); color:var(--on-accent); }
   .section.hidden{ display:none; }
 
-  /* ---- MIDI port activity ---- */
-  .midi-dot{
-    width:9px; height:9px; flex:none; border-radius:50%;
-    background:var(--bezel); border:2px solid var(--body-lit);
-  }
-  .midi-dot.active{ background:var(--accent-lit); box-shadow:0 0 7px var(--accent); }
-
   /* ---- MIDI learn ---- */
   body.learning .ctl .name{ cursor:pointer; color:var(--warn); text-decoration:underline dotted; }
   body.learning .ctl .name:hover{ color:var(--accent-lit); }
@@ -617,8 +610,6 @@
         </div>
       </div>
 
-      <div class="cc-row" id="midiRoutes"></div>
-
       <div class="play-wrap">
         <div class="matrix">
           <div class="cols" id="colHeads"></div>
@@ -643,7 +634,6 @@
           <span class="readout" id="midiStatus">none</span>
           <span class="cc-label">MIDI In</span>
         </div>
-
       </div>
       <div class="piano-scroll"><div class="piano" id="piano"></div></div>
       <div class="pads" id="pads"></div>
@@ -808,15 +798,13 @@ function stopNote(note, chan){
 // secure context, so https or localhost.
 let midiAccess = null;
 
-function attachMidiInput(inp, key){
+function attachMidiInput(inp){
   inp.onmidimessage = m => {
     const st = m.data[0], d1 = m.data[1], d2 = m.data[2];
     const ch = st & 0x0F, cmd = st & 0xF0;
-    const role = midiRoleFor(key);
-    flashMidiRow(key);
-    if (cmd === 0x90 && d2 > 0) midiNote(true, d1, d2, ch, role);
-    else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) midiNote(false, d1, 0, ch, role);
-    else if (cmd === 0xB0 && ready && role !== 'off'){
+    if (cmd === 0x90 && d2 > 0) playNote(d1, d2, ch);
+    else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) stopNote(d1, ch);
+    else if (cmd === 0xB0 && ready){
       // Control changes go to the firmware exactly as they would on the
       // hardware, so the CC map and MIDI Learn behave identically here.
       Module.ccall('emu_cc', null, ['number','number','number'], [ch, d1, d2]);
@@ -824,75 +812,15 @@ function attachMidiInput(inp, key){
   };
 }
 
-// One row per input, each with its own role. A minichord shows up as two
-// ports; set one to Chords and the other to Harp and the whole instrument
-// drives this one.
-// A dot next to each port that lights when a message arrives from it, which
-// is the quickest way to tell two identically named ports apart.
-function flashMidiRow(key){
-  const el = document.querySelector('[data-midikey="' + CSS.escape(key) + '"]');
-  if (!el) return;
-  el.classList.add('active');
-  clearTimeout(el._flash);
-  el._flash = setTimeout(() => el.classList.remove('active'), 220);
-}
-
-function buildMidiRoutes(names){
-  const host = document.getElementById('midiRoutes');
-  if (!host) return;
-  host.innerHTML = '';
-  if (!names.length){
-    const cc = document.createElement('div');
-    cc.className = 'cc';
-    cc.innerHTML = '<span class="readout">no devices</span><span class="cc-label">MIDI Routing</span>';
-    host.appendChild(cc);
-    return;
-  }
-  names.forEach(name => {
-    const cc = document.createElement('div');
-    cc.className = 'cc';
-    const dot = document.createElement('span');
-    dot.className = 'midi-dot';
-    dot.dataset.midikey = name;
-    const sel = document.createElement('select');
-    MIDI_ROLES.forEach(([v, label]) => {
-      const o = document.createElement('option');
-      o.value = v; o.textContent = label;
-      sel.appendChild(o);
-    });
-    sel.value = midiRoleFor(name);
-    sel.onchange = () => setMidiRole(name, sel.value);
-    const lab = document.createElement('span');
-    lab.className = 'cc-label';
-    lab.textContent = name.length > 22 ? name.slice(0, 22) + '\u2026' : name;
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;align-items:center;gap:6px';
-    row.appendChild(dot); row.appendChild(sel);
-    cc.appendChild(row); cc.appendChild(lab);
-    host.appendChild(cc);
-  });
-}
-
 function refreshMidiInputs(){
   if (!midiAccess) return [];
-  // A device can present several ports under the SAME name -- the minichord
-  // has one for its chord section and one for its harp. Keying a role by
-  // name alone made them share one setting, so assigning Harp to one
-  // silently assigned it to both and nothing ever reached the chord
-  // detector. Each port gets its own key: name plus its position among
-  // ports of that name, which survives a reconnect as long as the order
-  // does.
-  const names = [], seen = {};
+  const names = [];
   for (const inp of midiAccess.inputs.values()){
-    const name = inp.name || 'unnamed';
-    const n = (seen[name] = (seen[name] || 0) + 1);
-    const key = n > 1 ? (name + ' #' + n) : name;
-    attachMidiInput(inp, key);
-    names.push(key);
+    attachMidiInput(inp);
+    names.push(inp.name || 'unnamed');
   }
   const el = document.getElementById('midiStatus');
-  if (el) el.textContent = names.length ? (names.length + ' port' + (names.length > 1 ? 's' : '')) : 'none';
-  buildMidiRoutes(names);
+  if (el) el.textContent = names.length ? names[0].slice(0, 18) : 'none';
   return names;
 }
 
@@ -1559,230 +1487,6 @@ function buildPlaySurface(){
 
   buildSequencer();
   buildGamepad();
-}
-
-/* ---- MIDI chord detection ---- */
-// The minichord sends the NOTES of a chord, not which button was pressed, so
-// the only way to drive this matrix from it is to work out what the chord
-// was. In Chords mode the incoming notes are identified and the matching
-// matrix cell is pressed, which means the 8b8 applies its OWN octave,
-// inversion, spacing, Barry setting and temperament rather than echoing the
-// voicing it was sent.
-// Each MIDI input gets its own role, because a single device can present
-// several ports with different jobs: the minichord exposes one port for its
-// chord section and another for its harp. Roles are remembered by device
-// name, so a controller keeps its assignment across sessions.
-const MIDI_ROLES = [
-  ['notes',  'Notes'],      // plays through as sent; the strumpad follows it
-  ['chords', 'Re-voice'],   // identify the chord and press the matrix instead
-  ['harp',   'Harp'],       // pluck the strumpad
-  ['off',    'Off'],
-];
-const midiRoles = {};                  // device name -> role
-function midiRoleFor(name){
-  if (midiRoles[name]) return midiRoles[name];
-  try {
-    const saved = localStorage.getItem('8b8.role.' + name);
-    if (saved) return (midiRoles[name] = saved);
-  } catch(e){}
-  return 'notes';
-}
-function setMidiRole(name, role){
-  midiRoles[name] = role;
-  harpLo = harpHi = null;              // relearn the incoming range
-  try { localStorage.setItem('8b8.role.' + name, role); } catch(e){}
-  if (role !== 'chords') midiHeld.clear();
-}
-
-const midiHeld = new Set();
-let detectTimer = null;
-
-const DETECT = [];
-for (const key in CHORDS){
-  DETECT.push({ pcs: CHORDS[key].tones.map(t => t % 12), key, barry: false });
-  if (CHORDS[key].barry) DETECT.push({ pcs: CHORDS[key].barry.map(t => t % 12), key, barry: true });
-}
-
-const COL_PC = ROOTS.map(r => r[1] % 12);          // F C G D A E B
-
-// Every chromatic root is reachable: seven columns plus the sharp modifier.
-function rootToMatrix(pc){
-  let i = COL_PC.indexOf(pc);
-  if (i >= 0) return { col: i, sharp: false };
-  i = COL_PC.indexOf((pc + 11) % 12);
-  if (i >= 0) return { col: i, sharp: true };
-  return null;
-}
-
-function detectChord(){
-  const notes = [...midiHeld].sort((a, b) => a - b);
-  if (notes.length < 3) return null;
-  const pcs = [...new Set(notes.map(n => n % 12))].sort((a, b) => a - b).join();
-  const bass = notes[0] % 12;
-
-  let best = null;
-  for (const cand of DETECT){
-    // Sixths only exist on this matrix under Barry mode. With Barry off,
-    // reading a chord as a sixth would render it as a plain triad and drop a
-    // note, so prefer the reading that reproduces every note -- a minor
-    // seventh a third below is the same four pitches.
-    if (cand.barry && !barryOn) continue;
-    for (let root = 0; root < 12; root++){
-      const set = [...new Set(cand.pcs.map(t => (t + root) % 12))].sort((a, b) => a - b);
-      if (set.join() !== pcs) continue;
-      // m7 and maj6 are the same notes, and a diminished seventh is the same
-      // four notes from any of its members. The bass decides, which is right
-      // for the minichord since it voices chords in root position.
-      const score = (root === bass ? 4 : 0) + (cand.barry === barryOn ? 1 : 0);
-      if (!best || score > best.score) best = { root, key: cand.key, score };
-    }
-  }
-  return best;
-}
-
-const PC_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-let lastChordLog = '';
-
-function midiChordUpdate(){
-  const found = detectChord();
-
-  // Report what came in when nothing matches, because otherwise a chord the
-  // table does not know about is indistinguishable from the feature being
-  // broken -- it just silently does nothing.
-  if (!found && midiHeld.size >= 3){
-    const notes = [...midiHeld].sort((a, b) => a - b);
-    const sig = notes.join(',');
-    if (sig !== lastChordLog){
-      lastChordLog = sig;
-      const named = notes.map(n => PC_NAMES[n % 12] + (Math.floor(n / 12) - 1));
-      const pcs = [...new Set(notes.map(n => n % 12))].sort((a, b) => a - b);
-      log('err', 'No chord matched: ' + named.join(' ') +
-                 '  (' + pcs.length + ' pitch classes: ' +
-                 pcs.map(p => PC_NAMES[p]).join(' ') + ')');
-    }
-  } else if (found){
-    const sig = [...midiHeld].sort((a, b) => a - b).join(',');
-    if (sig !== lastChordLog){
-      lastChordLog = sig;
-      log('sys', 'Chord in: ' + PC_NAMES[found.root] + ' ' + found.key +
-                 ' from ' + midiHeld.size + ' notes');
-    }
-  }
-
-  if (!found){
-    if (midiHeld.size === 0 && !latchOn){
-      heldRows.clear(); soundingKey = null; releaseChord(); strumNotes = []; paintChords();
-    }
-    return;
-  }
-  const m = rootToMatrix(found.root);
-  if (!m) return;
-  activeRoot = m.col;
-  if (sharpOn !== m.sharp){
-    sharpOn = m.sharp;
-    const sw = document.getElementById('sharpSw');
-    if (sw) sw.classList.toggle('active', sharpOn);
-  }
-  heldRows = new Set(found.key.split('').map(Number));
-  soundingKey = found.key;
-  refreshChord();
-}
-
-// A harp note picks a string on the 8b8's OWN ladder, so the 8b8 plays its
-// own voicing rather than echoing the pitch it was sent.
-//
-// Matching by nearest pitch does not work: the two instruments cover
-// different registers, so everything above the top of this ladder collapses
-// onto its last string and a sweep stops moving. Instead the incoming range
-// is learned as it is played and mapped proportionally onto the twelve
-// strings, which makes a full sweep on one instrument a full sweep on the
-// other whatever register it arrives in. Until an octave has been seen there
-// is nothing to scale against, so it falls back to nearest pitch.
-let harpLo = null, harpHi = null;
-
-function harpPluck(note){
-  if (!strumNotes.length) return;
-  if (harpLo === null || note < harpLo) harpLo = note;
-  if (harpHi === null || note > harpHi) harpHi = note;
-
-  let best;
-  if (harpHi - harpLo >= 12){
-    const t = (note - harpLo) / (harpHi - harpLo);
-    best = Math.round(t * (strumNotes.length - 1));
-  } else {
-    best = 0;
-    let bd = 1e9;
-    for (let i = 0; i < strumNotes.length; i++){
-      const d = Math.abs(strumNotes[i] - note);
-      if (d < bd){ bd = d; best = i; }
-    }
-  }
-  best = Math.max(0, Math.min(strumNotes.length - 1, best));
-  const n = strumNotes[best];
-  playNote(n, 100, 0);
-  setTimeout(() => stopNote(n, 0), 400);
-  const el = document.querySelector('.strum .seg[data-seg="' + best + '"]');
-  if (el){ el.classList.add('lit'); setTimeout(() => el.classList.remove('lit'), 120); }
-}
-
-// Builds a harp ladder straight from whatever notes arrived, without naming
-// the chord at all. Chord identification can fail -- the matrix only knows
-// seven chord types, and an instrument may voice something outside them --
-// but stacking the pitch classes that actually arrived always works, and is
-// arguably more faithful anyway.
-function ladderFromNotes(notes){
-  if (!notes.length) return [];
-  const pcs = [...new Set(notes.map(n => n % 12))].sort((a, b) => a - b);
-  const low = Math.min.apply(null, notes);
-  const start = low - 12 + strumOct * 12;         // an octave below, as the matrix ladder does
-  const floor12 = Math.floor(start / 12) * 12;
-
-  let out = [];
-  for (let o = 0; o < 8 && out.length < STRUM_SEGMENTS; o++){
-    for (const pc of pcs){
-      const n = floor12 + pc + o * 12;
-      if (n < start) continue;
-      out.push(n);
-      if (out.length >= STRUM_SEGMENTS) break;
-    }
-  }
-  if (!out.length) return [];
-  while (Math.max.apply(null, out) > 96) out = out.map(n => n - 12);
-  while (Math.min.apply(null, out) < 24) out = out.map(n => n + 12);
-  return out;
-}
-
-// In Notes role the incoming chord is passed through untouched, but it also
-// quietly retunes the strumpad so the 8b8 harp follows what is being played.
-// Nothing here can fail to "match": if it is a chord, the harp follows it.
-let followTimer = null;
-function midiFollowUpdate(){
-  const notes = [...midiHeld].sort((a, b) => a - b);
-  if (notes.length >= 2) strumNotes = ladderFromNotes(notes);
-}
-
-function midiNote(on, note, vel, chan, role){
-  role = role || 'notes';
-  if (role === 'off') return;
-
-  if (role === 'harp'){
-    if (on) harpPluck(note);
-    return;
-  }
-
-  if (role !== 'chords' || chan === 9){
-    if (on) playNote(note, vel, chan); else stopNote(note, chan);
-    if (chan !== 9){
-      if (on) midiHeld.add(note); else midiHeld.delete(note);
-      clearTimeout(followTimer);
-      followTimer = setTimeout(midiFollowUpdate, 35);
-    }
-    return;
-  }
-  // Chords role: the notes are evidence, not something to play directly.
-  if (on) midiHeld.add(note); else midiHeld.delete(note);
-  clearTimeout(detectTimer);
-  detectTimer = setTimeout(midiChordUpdate, 35);   // let the chord settle
 }
 
 /* ---- Keyboard: two octaves of piano, plus drum pads ---- */
