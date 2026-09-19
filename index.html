@@ -362,6 +362,13 @@
   .nav button.active{ background:var(--accent); color:var(--on-accent); }
   .section.hidden{ display:none; }
 
+  /* ---- MIDI port activity ---- */
+  .midi-dot{
+    width:9px; height:9px; flex:none; border-radius:50%;
+    background:var(--bezel); border:2px solid var(--body-lit);
+  }
+  .midi-dot.active{ background:var(--accent-lit); box-shadow:0 0 7px var(--accent); }
+
   /* ---- MIDI learn ---- */
   body.learning .ctl .name{ cursor:pointer; color:var(--warn); text-decoration:underline dotted; }
   body.learning .ctl .name:hover{ color:var(--accent-lit); }

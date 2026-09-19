@@ -362,6 +362,13 @@
   .nav button.active{ background:var(--accent); color:var(--on-accent); }
   .section.hidden{ display:none; }
 
+  /* ---- MIDI port activity ---- */
+  .midi-dot{
+    width:9px; height:9px; flex:none; border-radius:50%;
+    background:var(--bezel); border:2px solid var(--body-lit);
+  }
+  .midi-dot.active{ background:var(--accent-lit); box-shadow:0 0 7px var(--accent); }
+
   /* ---- MIDI learn ---- */
   body.learning .ctl .name{ cursor:pointer; color:var(--warn); text-decoration:underline dotted; }
   body.learning .ctl .name:hover{ color:var(--accent-lit); }
@@ -800,12 +807,12 @@ function stopNote(note, chan){
 // secure context, so https or localhost.
 let midiAccess = null;
 
-function attachMidiInput(inp){
-  const name = inp.name || 'unnamed';
+function attachMidiInput(inp, key){
   inp.onmidimessage = m => {
     const st = m.data[0], d1 = m.data[1], d2 = m.data[2];
     const ch = st & 0x0F, cmd = st & 0xF0;
-    const role = midiRoleFor(name);
+    const role = midiRoleFor(key);
+    flashMidiRow(key);
     if (cmd === 0x90 && d2 > 0) midiNote(true, d1, d2, ch, role);
     else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) midiNote(false, d1, 0, ch, role);
     else if (cmd === 0xB0 && ready && role !== 'off'){
@@ -819,6 +826,16 @@ function attachMidiInput(inp){
 // One row per input, each with its own role. A minichord shows up as two
 // ports; set one to Chords and the other to Harp and the whole instrument
 // drives this one.
+// A dot next to each port that lights when a message arrives from it, which
+// is the quickest way to tell two identically named ports apart.
+function flashMidiRow(key){
+  const el = document.querySelector('[data-midikey="' + CSS.escape(key) + '"]');
+  if (!el) return;
+  el.classList.add('active');
+  clearTimeout(el._flash);
+  el._flash = setTimeout(() => el.classList.remove('active'), 220);
+}
+
 function buildMidiRoutes(names){
   const host = document.getElementById('midiRoutes');
   if (!host) return;
@@ -833,6 +850,9 @@ function buildMidiRoutes(names){
   names.forEach(name => {
     const cc = document.createElement('div');
     cc.className = 'cc';
+    const dot = document.createElement('span');
+    dot.className = 'midi-dot';
+    dot.dataset.midikey = name;
     const sel = document.createElement('select');
     MIDI_ROLES.forEach(([v, label]) => {
       const o = document.createElement('option');
@@ -844,17 +864,30 @@ function buildMidiRoutes(names){
     const lab = document.createElement('span');
     lab.className = 'cc-label';
     lab.textContent = name.length > 22 ? name.slice(0, 22) + '\u2026' : name;
-    cc.appendChild(sel); cc.appendChild(lab);
+    const row = document.createElement('div');
+    row.style.cssText = 'display:flex;align-items:center;gap:6px';
+    row.appendChild(dot); row.appendChild(sel);
+    cc.appendChild(row); cc.appendChild(lab);
     host.appendChild(cc);
   });
 }
 
 function refreshMidiInputs(){
   if (!midiAccess) return [];
-  const names = [];
+  // A device can present several ports under the SAME name -- the minichord
+  // has one for its chord section and one for its harp. Keying a role by
+  // name alone made them share one setting, so assigning Harp to one
+  // silently assigned it to both and nothing ever reached the chord
+  // detector. Each port gets its own key: name plus its position among
+  // ports of that name, which survives a reconnect as long as the order
+  // does.
+  const names = [], seen = {};
   for (const inp of midiAccess.inputs.values()){
-    attachMidiInput(inp);
-    names.push(inp.name || 'unnamed');
+    const name = inp.name || 'unnamed';
+    const n = (seen[name] = (seen[name] || 0) + 1);
+    const key = n > 1 ? (name + ' #' + n) : name;
+    attachMidiInput(inp, key);
+    names.push(key);
   }
   const el = document.getElementById('midiStatus');
   if (el) el.textContent = names.length ? (names.length + ' port' + (names.length > 1 ? 's' : '')) : 'none';
