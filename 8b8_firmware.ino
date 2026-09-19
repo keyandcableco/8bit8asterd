@@ -1811,7 +1811,7 @@ static void update100Hz() {
   // whole trick -- at low rates it reads as a flam, at high rates a buzz
   // roll. Only percussion is envelope-driven, so nothing else is touched.
   if (params[P_DRUM_ROLL] > 0) {
-    uint8_t every = 100 / params[P_DRUM_ROLL];
+    uint8_t every = pgm_read_byte(&RATE_EVERY[params[P_DRUM_ROLL]]);
     if (every == 0) every = 1;
     for (uint8_t i = 0; i < MAX_VOICES; i++) {
       if (m_playing[i] != PERC_NOTE || !voices[i].isPlaying()) continue;
@@ -1875,7 +1875,7 @@ static void update100Hz() {
 
       // Retrigger: re-strike the envelope while the note is still held.
       if (params[P_RETRIG_RATE] > 0 && voices[i].m_age > 0) {
-        uint8_t every = 100 / params[P_RETRIG_RATE];
+        uint8_t every = pgm_read_byte(&RATE_EVERY[params[P_RETRIG_RATE]]);
         if (every == 0) every = 1;
         if (voices[i].m_age % every == 0) {
           voices[i].m_ampl = voices[i].m_vel;

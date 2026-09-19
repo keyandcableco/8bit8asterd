@@ -57,4 +57,16 @@ static const uint8_t PARAM_MIN[NUM_PARAMS] PROGMEM = { 0, 1, 0, 0, 0, 1, 1, 0, 0
 static const uint8_t PARAM_MAX[NUM_PARAMS] PROGMEM = { 1, 8, 3, 64, 8, 120, 63, 64, 1, 200, 31, 200, 1, 200, 15, 1, 15, 200, 200, 200, 14, 50, 30, 1, 63, 6, 50, 64, 50, 1, 32, 32, 32, 32, 100, 48, 15, 15, 15, 9, 11, 1 };
 static const uint8_t PARAM_DEFAULT[NUM_PARAMS] PROGMEM = { 0, 1, 0, 32, 0, 30, 20, 0, 0, 50, 6, 0, 0, 40, 5, 0, 8, 100, 100, 100, 7, 0, 0, 0, 0, 0, 17, 32, 0, 0, 1, 8, 32, 32, 0, 24, 15, 15, 15, 0, 0, 1 };
 
+// Ticks between events for the re-strike controls (Drum Roll,
+// Retrigger), indexed by the parameter value. The tick is 100Hz, so
+// ticks = 100 / rate. Rate is spaced EXPONENTIALLY rather than
+// linearly: rhythm is heard in ratios, so a linear Hz control puts a
+// doubling between the first two positions and nothing at all across
+// the top half. This curve runs 1.5Hz to 45Hz at about 6% per step.
+static const uint8_t RATE_EVERY[51] PROGMEM = {
+  0, 67, 62, 58, 54, 51, 47, 44, 41, 38, 36, 33, 31, 29, 27, 25, 24,
+  22, 20, 19, 18, 17, 16, 14, 14, 13, 12, 11, 10, 10, 9, 8, 8, 7,
+  7, 6, 6, 5, 5, 5, 4, 4, 4, 4, 3, 3, 3, 3, 3, 2, 2,
+};
+
 #endif // PARAMETERS_H

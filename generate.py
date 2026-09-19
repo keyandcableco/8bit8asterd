@@ -141,7 +141,9 @@ PARAMS = [
     dict(key="drum_roll", label="Roll", group="Drum FX", kind="int",
          min=0, max=50, default=0, unit="Hz",
          help="Re-strikes the envelope while a drum is still ringing. Low "
-              "values flam, high values become a buzz roll. 0 = off."),
+              "values flam, high values become a buzz roll. The fader is "
+              "spaced by ratio rather than by Hz, so it moves evenly by ear "
+              "all the way up. 0 = off."),
     dict(key="drum_flam", label="Flam", group="Drum FX", kind="int",
          min=0, max=30, default=0, scale=10, unit="ms",
          help="Every hit fires a second time this long after. 0 = off."),
@@ -172,7 +174,8 @@ PARAMS = [
               "unit. Negative falls, positive rises, 0 is off."),
     dict(key="retrig_rate", label="Retrigger", group="Auto FX", kind="int",
          min=0, max=50, default=0, unit="Hz",
-         help="Re-strikes the envelope while a note is held. 0 = off."),
+         help="Re-strikes the envelope while a note is held. Spaced by "
+              "ratio rather than by Hz, so it moves evenly by ear. 0 = off."),
 
     # --- Envelope ----------------------------------------------------------
     dict(key="env_mode", label="Mode", group="Envelope", kind="enum",
@@ -267,11 +270,11 @@ PRESETS = {
                           warp_motion=9, noise_enable=1, noise_period=9),
     "Ring Zone": dict(warp_mode=8, warp_rate=105, warp_depth=30,
                       warp_motion=26, buzz_enable=1, buzz_ratio=2),
-    "Buzz Roll": dict(drum_roll=32, drum_decay=70, drum_chaos=10),
+    "Buzz Roll": dict(drum_roll=45, drum_decay=70, drum_chaos=10),
     "Drunk Drummer": dict(drum_flam=7, drum_chaos=38, drum_tune=92,
                           drum_decay=120),
     "Reverse Kit": dict(drum_reverse=1, drum_decay=150, drum_bend=40),
-    "Broken Machine": dict(drum_roll=44, drum_chaos=58, drum_noise=4,
+    "Broken Machine": dict(drum_roll=50, drum_chaos=58, drum_noise=4,
                            drum_decay=55, drum_bend=170),
     "Bad Ground": dict(warp_mode=3, warp_rate=6, warp_depth=38,
                        warp_motion=35, noise_period=6),
@@ -279,7 +282,7 @@ PRESETS = {
                      env_decay=6, env_sustain=26, env_release=8),
     "Laser Jump": dict(sweep_amount=52, env_mode=1, env_attack=1,
                        env_decay=10, env_sustain=6, env_release=4),
-    "Machine Gun": dict(retrig_rate=18, noise_enable=1, noise_period=4,
+    "Machine Gun": dict(retrig_rate=38, noise_enable=1, noise_period=4,
                         env_mode=1, env_attack=1, env_decay=14,
                         env_sustain=10, env_release=6),
 }
@@ -409,6 +412,23 @@ def emit_header(path):
                         ("PARAM_DEFAULT", "default")):
         vals = ", ".join(str(p[field]) for p in PARAMS)
         a(f"static const uint8_t {name}[NUM_PARAMS] PROGMEM = {{ {vals} }};")
+    a("")
+    a("// Ticks between events for the re-strike controls (Drum Roll,")
+    a("// Retrigger), indexed by the parameter value. The tick is 100Hz, so")
+    a("// ticks = 100 / rate. Rate is spaced EXPONENTIALLY rather than")
+    a("// linearly: rhythm is heard in ratios, so a linear Hz control puts a")
+    a("// doubling between the first two positions and nothing at all across")
+    a("// the top half. This curve runs 1.5Hz to 45Hz at about 6% per step.")
+    a("static const uint8_t RATE_EVERY[51] PROGMEM = {")
+    import math
+    LO, HI, N = 1.5, 45.0, 50
+    vals = ["0"]
+    for v in range(1, N + 1):
+        rate = LO * (HI / LO) ** ((v - 1) / (N - 1))
+        vals.append(str(max(1, min(255, round(100.0 / rate)))))
+    for i in range(0, len(vals), 17):
+        a("  " + ", ".join(vals[i:i + 17]) + ",")
+    a("};")
     a("")
     a("#endif // PARAMETERS_H")
     with open(path, "w") as f:
