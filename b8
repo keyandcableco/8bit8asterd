@@ -1,9 +1,14 @@
 #!/bin/bash
 # 8b8 build helper.  Put this in the repo root, chmod +x, then:
 #   ./b8 patch <file.patch>   apply a patch (dry run first, aborts on failure)
-#   ./b8 build                regenerate + compile
-#   ./b8 flash                regenerate + compile + upload
-#   ./b8 all <file.patch>     patch, then flash
+#   ./b8 build                regenerate + compile firmware
+#   ./b8 wasm                 regenerate + rebuild the browser emulator
+#   ./b8 flash                regenerate + compile + upload to the Leonardo
+#   ./b8 all <file.patch>     patch, then flash AND rebuild the wasm
+#
+# "all" rebuilds the wasm because the emulator runs the firmware: a firmware
+# change that is only flashed reaches the hardware and not the browser, and
+# the browser then quietly keeps playing the old build.
 set -e
 REPO="$(cd "$(dirname "$0")" && pwd)"
 FQBN="arduino:avr:leonardo"
@@ -22,13 +27,35 @@ do_patch() {
   git -C "$REPO" apply "$1"
   echo "applied: $(basename "$1")"
   git -C "$REPO" diff --stat
+  # new files do not show in diff --stat, so list them too
+  local untracked
+  untracked=$(git -C "$REPO" ls-files --others --exclude-standard)
+  [ -n "$untracked" ] && { echo "new files:"; echo "$untracked" | sed 's/^/  /'; }
+  return 0
+}
+
+do_generate() {
+  echo "== generate =="
+  python3 "$REPO/generate.py"
 }
 
 do_build() {
-  echo "== generate =="
-  python3 "$REPO/generate.py"
-  echo "== compile =="
+  do_generate
+  echo "== compile firmware =="
   arduino-cli compile --fqbn "$FQBN" "$REPO"
+}
+
+do_wasm() {
+  if ! command -v em++ >/dev/null; then
+    echo "== wasm: SKIPPED, em++ not on PATH =="
+    echo "   the browser emulator still has the PREVIOUS build."
+    echo "   run:  source ~/emsdk/emsdk_env.sh && ./b8 wasm"
+    return 0
+  fi
+  do_generate
+  echo "== build wasm =="
+  chmod +x "$REPO/emulator/build-wasm.sh"
+  "$REPO/emulator/build-wasm.sh"
 }
 
 do_flash() {
@@ -42,7 +69,8 @@ do_flash() {
 case "$1" in
   patch) do_patch "$2" ;;
   build) do_build ;;
+  wasm)  do_wasm ;;
   flash) do_flash ;;
-  all)   do_patch "$2"; do_flash ;;
-  *) echo "usage: ./b8 {patch <file>|build|flash|all <file>}"; exit 1 ;;
+  all)   do_patch "$2"; do_flash; do_wasm ;;
+  *) echo "usage: ./b8 {patch <file>|build|wasm|flash|all <file>}"; exit 1 ;;
 esac
