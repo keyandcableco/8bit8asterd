@@ -406,10 +406,21 @@ public:
   }
 
   void setEnvelope(ushort ch, ushort divisor, ushort shape) {
-    unsigned char *r = regs[ch % 3];
+    uint8_t chip = ch % 3;
+    unsigned char *r = regs[chip];
     r[ENVLOW]  = (divisor & 0xFF);
     r[ENVHIGH] = (divisor >> 8);
     r[ENVSHAPE] = shape;
+
+    // Writing R13 is what RESTARTS the envelope, and the register cache
+    // suppresses a write when the value has not changed. Every drum in the
+    // kit uses shape 9, so a drum landing on a chip whose envelope is still
+    // set to 9 by another drum got no restart at all -- it played into an
+    // envelope that had already decayed to nothing, and was silent. Push the
+    // period through the cache, then rewrite the shape unconditionally.
+    update(chip);
+    writeReg(chip, ENVSHAPE, (unsigned char)shape);
+    lastregs[chip][ENVSHAPE] = (unsigned char)shape;
   }
 
   void setPercOff(ushort ch) {
