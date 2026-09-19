@@ -441,6 +441,17 @@ def emit_header(path):
         a("  " + ", ".join(vals[i:i + 17]) + ",")
     a("};")
     a("")
+    a("// Tone-period multiplier for the Warp pitch modes, x256, indexed by")
+    a("// warp depth. Pitch is heard in semitones, so the table is")
+    a("// exponential: a linear multiplier put half the total drop in the")
+    a("// first quarter of the fader. This spreads 30 semitones evenly.")
+    a("static const uint16_t WARP_STRETCH[64] PROGMEM = {")
+    import math
+    sv = [str(int(round(256 * (2 ** (d * 30.0 / 63.0 / 12.0))))) for d in range(64)]
+    for i in range(0, len(sv), 12):
+        a("  " + ", ".join(sv[i:i + 12]) + ",")
+    a("};")
+    a("")
     a("#endif // PARAMETERS_H")
     with open(path, "w") as f:
         f.write("\n".join(lines) + "\n")

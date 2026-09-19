@@ -69,4 +69,17 @@ static const uint8_t RATE_EVERY[51] PROGMEM = {
   7, 6, 6, 5, 5, 5, 4, 4, 4, 4, 3, 3, 3, 3, 3, 2, 2,
 };
 
+// Tone-period multiplier for the Warp pitch modes, x256, indexed by
+// warp depth. Pitch is heard in semitones, so the table is
+// exponential: a linear multiplier put half the total drop in the
+// first quarter of the fader. This spreads 30 semitones evenly.
+static const uint16_t WARP_STRETCH[64] PROGMEM = {
+  256, 263, 270, 278, 286, 294, 302, 310, 319, 328, 337, 346,
+  356, 366, 376, 387, 398, 409, 420, 432, 444, 456, 469, 482,
+  495, 509, 523, 538, 553, 568, 584, 601, 617, 635, 652, 670,
+  689, 708, 728, 748, 769, 791, 813, 835, 859, 883, 907, 933,
+  959, 985, 1013, 1041, 1070, 1100, 1131, 1162, 1195, 1228, 1262, 1297,
+  1333, 1371, 1409, 1448,
+};
+
 #endif // PARAMETERS_H

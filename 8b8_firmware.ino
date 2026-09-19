@@ -1064,6 +1064,18 @@ static bool startNote(ushort idx) {
 // Shared by Drum FX Chaos and by the Warp Zone Scramble mode.
 static uint16_t warpRngState = 0xACE1;
 
+// Depth is a magnitude, 1..63, and every mode should respond to it evenly.
+// It used to be read differently in each one -- as a raw bit pattern in
+// Stutter, a shift in Scramble, and not at all in Sync Buzz -- which is why
+// the control felt skewed and in places did nothing.
+static inline uint8_t warpScale(uint8_t depth, uint8_t maxv) {
+  return (uint8_t)(((uint16_t)depth * maxv + 31u) / 63u);
+}
+
+// Which mixer bits Stutter gates as depth rises: tone then noise, chip by
+// chip, so it thickens evenly instead of jumping around.
+static const uint8_t STUTTER_ORDER[6] PROGMEM = { 0, 3, 1, 4, 2, 5 };
+
 static uint8_t warpRand() {
   warpRngState ^= warpRngState << 7;
   warpRngState ^= warpRngState >> 9;
@@ -1485,21 +1497,30 @@ static void warpTick() {
               // volume actually follows the envelope, so force the M bit
               // (0x10) onto any channel that is currently sounding. Without
               // this the mode does nothing unless Buzzy Bass is already on.
+      uint8_t want = 1 + warpScale(depth, 8);     // 1..9 channels
+      uint8_t taken = 0;
       for (uint8_t c = 0; c < 3; c++) {
-        for (uint8_t sub = 0; sub < 3; sub++) {
+        bool touched = false;
+        for (uint8_t sub = 0; sub < 3 && taken < want; sub++) {
           uint8_t a = psg.regs[c][PSGRegs::TONEAAMPL + sub];
-          if (a != 0) writeReg(c, PSGRegs::TONEAAMPL + sub, a | 0x10);
+          if (a == 0) continue;
+          writeReg(c, PSGRegs::TONEAAMPL + sub, a | 0x10);
+          taken++;
+          touched = true;
         }
-        writeReg(c, PSGRegs::ENVSHAPE, psg.regs[c][PSGRegs::ENVSHAPE]);
+        if (touched) writeReg(c, PSGRegs::ENVSHAPE, psg.regs[c][PSGRegs::ENVSHAPE]);
       }
       break;
     }
 
     case 2: { // Stutter -- gate tone/noise on and off at the mixer. Bits
               // 6-7 (I/O direction) are carried through untouched.
+      uint8_t n = 1 + warpScale(depth, 5);        // 1..6 sources gated
+      uint8_t patt = 0;
+      for (uint8_t i = 0; i < n; i++) patt |= (1 << pgm_read_byte(&STUTTER_ORDER[i]));
+      if (!(warpPhase & 1)) patt = 0;
       for (uint8_t c = 0; c < 3; c++) {
         uint8_t m = psg.regs[c][PSGRegs::MIXER];
-        uint8_t patt = (warpPhase & 1) ? (depth & 0x3F) : 0;
         writeReg(c, PSGRegs::MIXER, ((m ^ patt) & 0x3F) | (m & 0xC0));
       }
       break;
@@ -1507,11 +1528,16 @@ static void warpTick() {
 
     case 3: { // Scramble -- the closest thing to a physical bend: junk into
               // a random audio register on a random chip.
-      uint8_t hits = 1 + (depth >> 4); // 1..4 registers per tick
+      uint8_t hits = 1 + warpScale(depth, 3);     // 1..4 registers per tick
+      // Depth also decides how far a value is allowed to move: at the bottom
+      // only the low bits are disturbed, at the top the whole byte is. That
+      // gives a continuous slide from a wobble to complete chaos, rather
+      // than four steps and nothing in between.
+      uint8_t width = (uint8_t)((1u << (1 + warpScale(depth, 7))) - 1u);
       for (uint8_t n = 0; n < hits; n++) {
         uint8_t c   = warpRand() % 3;
         uint8_t reg = pgm_read_byte(&warpVictims[warpRand() % N_WARP_VICTIMS]);
-        uint8_t val = warpRand();
+        uint8_t val = (uint8_t)((psg.regs[c][reg] & ~width) | (warpRand() & width));
         if (reg == PSGRegs::MIXER) {  // never reachable today, but stays
           val = (val & 0x3F) | (psg.regs[c][PSGRegs::MIXER] & 0xC0);
         }
@@ -1527,7 +1553,8 @@ static void warpTick() {
     case 5: { // Tape Stop -- stretch every tone period further and further,
               // so pitch sags to a halt, then snaps back. The drag is the
               // whole point; where it lands is nothing.
-      uint16_t stretch = 256 + (uint16_t)(((uint32_t)(warpRamp & 0x3FF) * depth) >> 6);
+      uint16_t peak = pgm_read_word(&WARP_STRETCH[depth & 63]);
+      uint16_t stretch = 256 + (uint16_t)(((uint32_t)(peak - 256) * (warpRamp & 0x3FF)) / 1023u);
       uint8_t c = warpPhase % 3;      // one chip per tick, to bound CPU
       for (uint8_t sub = 0; sub < 3; sub++) {
         uint8_t lo = PSGRegs::TONEALOW + (sub << 1);
@@ -1544,7 +1571,8 @@ static void warpTick() {
     case 6: { // Siren -- sweep every tone period up and down continuously.
       uint8_t t = warpRamp & 0x7F;
       if (t > 63) t = 127 - t;                    // triangle 0..63..0
-      uint16_t mul = 256 + (uint16_t)(((uint16_t)t * depth) >> 3);
+      uint16_t peak = pgm_read_word(&WARP_STRETCH[depth & 63]);
+      uint16_t mul = 256 + (uint16_t)(((uint32_t)(peak - 256) * t) / 63u);
       uint8_t c = warpPhase % 3;
       for (uint8_t sub = 0; sub < 3; sub++) {
         uint8_t lo = PSGRegs::TONEALOW + (sub << 1);
@@ -1561,7 +1589,10 @@ static void warpTick() {
     case 7: { // Crush -- mask off progressively more of the tone period's
               // low bits, so pitch quantises to a coarser and coarser grid.
               // Sounds like the resolution itself is failing.
-      uint8_t bits = (uint8_t)(((uint16_t)(warpRamp & 0xFF) * depth) >> 11);
+      // Depth sets how coarse the grid gets at the peak of the sweep; below
+      // depth 9 the old expression masked no bits at all and did nothing.
+      uint8_t peakBits = 1 + warpScale(depth, 6);           // 1..7
+      uint8_t bits = (uint8_t)(((uint16_t)(warpRamp & 0xFF) * peakBits) / 255u);
       if (bits > 7) bits = 7;
       uint8_t mask = (uint8_t)(0xFF << bits);
       uint8_t c = warpPhase % 3;
@@ -1582,7 +1613,8 @@ static void warpTick() {
       for (uint8_t sub = 0; sub < 3; sub++) {
         uint8_t a = psg.regs[c][PSGRegs::TONEAAMPL + sub];
         if (a & 0x10) continue;            // envelope-driven: leave alone
-        uint8_t v = low ? (uint8_t)((a * (uint16_t)(63 - depth)) / 63) : a;
+        uint8_t cut = warpScale(depth, 15);
+        uint8_t v = low ? (uint8_t)(a > cut ? a - cut : 0) : a;
         writeReg(c, PSGRegs::TONEAAMPL + sub, v & 0x0F);
       }
       break;
@@ -1597,7 +1629,7 @@ static void warpTick() {
               // bits 6-7 are carried through untouched.
       uint8_t v = warpPhase & 0x1F;
       if (v > 15) v = 31 - v;            // triangle 0..15..0
-      v = (uint8_t)(((uint16_t)v * depth) / 63);
+      v = (uint8_t)(((uint16_t)v * warpScale(depth, 15)) / 15);
       for (uint8_t c = 0; c < 3; c++) {
         writeReg(c, PSGRegs::MIXER, psg.regs[c][PSGRegs::MIXER] & 0xC7);
         writeReg(c, PSGRegs::NOISEGEN, v);
