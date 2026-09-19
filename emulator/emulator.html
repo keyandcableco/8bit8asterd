@@ -630,6 +630,10 @@
           <span class="readout" id="kbRange">C4 &ndash; B5</span>
           <span class="cc-label">Range</span>
         </div>
+        <div class="cc">
+          <span class="readout" id="midiStatus">none</span>
+          <span class="cc-label">MIDI In</span>
+        </div>
       </div>
       <div class="piano-scroll"><div class="piano" id="piano"></div></div>
       <div class="pads" id="pads"></div>
@@ -789,42 +793,52 @@ function stopNote(note, chan){
   if (ready) Module.ccall('emu_note_off', null, ['number','number'], [chan||0, note]);
 }
 
-// Real MIDI hardware, if the browser offers it.
-if (navigator.requestMIDIAccess){
-  navigator.requestMIDIAccess().then(a => {
-    for (const inp of a.inputs.values()){
-      inp.onmidimessage = m => {
-        const [st, d1, d2] = m.data;
-        const ch = st & 0x0F, cmd = st & 0xF0;
-        if (cmd === 0x90 && d2 > 0) playNote(d1, d2, ch);
-        else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) stopNote(d1, ch);
-      };
+// Real MIDI hardware, if the browser offers it. Chrome, Edge, Opera and
+// Firefox 108+ have the Web MIDI API; Safari and iOS do not. It also needs a
+// secure context, so https or localhost.
+let midiAccess = null;
+
+function attachMidiInput(inp){
+  inp.onmidimessage = m => {
+    const st = m.data[0], d1 = m.data[1], d2 = m.data[2];
+    const ch = st & 0x0F, cmd = st & 0xF0;
+    if (cmd === 0x90 && d2 > 0) playNote(d1, d2, ch);
+    else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) stopNote(d1, ch);
+    else if (cmd === 0xB0 && ready){
+      // Control changes go to the firmware exactly as they would on the
+      // hardware, so the CC map and MIDI Learn behave identically here.
+      Module.ccall('emu_cc', null, ['number','number','number'], [ch, d1, d2]);
     }
-    log('sys','MIDI input connected.');
-  }).catch(() => {});
+  };
 }
 
-/* ---- sequencer engine: timed inside the audio render ---- */
-// Sample-counted in C++ rather than by setTimeout, because on this page the
-// audio callback runs on the main thread and any timer shares it. Measured
-// drift is about one sample over four seconds.
-function seqEnginePattern(rows){
-  if (!ready) return;
-  rows.forEach((r, i) => Module.ccall('emu_seq_row', null,
-    ['number','number','number'], [i, r.note, r.mask]));
+function refreshMidiInputs(){
+  if (!midiAccess) return [];
+  const names = [];
+  for (const inp of midiAccess.inputs.values()){
+    attachMidiInput(inp);
+    names.push(inp.name || 'unnamed');
+  }
+  const el = document.getElementById('midiStatus');
+  if (el) el.textContent = names.length ? names[0].slice(0, 18) : 'none';
+  return names;
 }
-function seqEngineStart(bpm, steps){
-  if (!ready) return;
-  Module.ccall('emu_seq_start', null, ['number','number'], [bpm, steps]);
-}
-function seqEngineTempo(bpm){
-  if (ready) Module.ccall('emu_seq_tempo', null, ['number'], [bpm]);
-}
-function seqEngineStop(){
-  if (ready) Module.ccall('emu_seq_stop', null, [], []);
-}
-function seqEngineStep(){
-  return ready ? Module.ccall('emu_seq_step', 'number', [], []) : -1;
+
+if (navigator.requestMIDIAccess){
+  navigator.requestMIDIAccess().then(a => {
+    midiAccess = a;
+    // Controllers are routinely plugged in after the page is open, and
+    // without this they would simply never be heard from.
+    a.onstatechange = () => {
+      const n = refreshMidiInputs();
+      log('sys', 'MIDI devices: ' + (n.length ? n.join(', ') : 'none'));
+    };
+    const n = refreshMidiInputs();
+    log('sys', n.length ? ('MIDI in: ' + n.join(', '))
+                        : 'MIDI ready \u2014 no device found yet. Plug one in.');
+  }).catch(e => log('err', 'MIDI unavailable: ' + e.message));
+} else {
+  log('sys', 'This browser has no Web MIDI. Chrome, Edge or Firefox 108+ do.');
 }
 
 
