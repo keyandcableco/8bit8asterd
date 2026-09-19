@@ -310,6 +310,7 @@ PRESETS = {
 # Where the published site lives. The social preview needs ABSOLUTE urls --
 # Reddit, Discord and the rest will not resolve a relative one.
 SITE_URL = "https://keyandcableco.github.io/8bit8asterd"
+SITE_HOME = "https://keyandcable.com"
 SITE_TITLE = "The 8Bit 8asterd"
 SITE_DESC = ("A 9-voice chiptune synth built on three AY-3-8910 chips. "
              "Playable in your browser, running the same firmware as the hardware.")
@@ -587,6 +588,12 @@ HTML_TEMPLATE = r"""<!doctype html>
     font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
     letter-spacing:.12em; color:var(--text-dim); margin-bottom:9px;
   }
+  .brand .eyebrow .brandlink{
+    display:flex; align-items:center; gap:9px;
+    color:inherit; text-decoration:none; cursor:pointer;
+  }
+  .brand .eyebrow .brandlink:hover{ color:var(--accent-lit); }
+  .brand .eyebrow .brandlink:hover img{ filter:brightness(1.15); }
   .brand .eyebrow img{
     height:calc(20px * var(--ui-scale)); width:auto; display:block;
     image-rendering:auto;
@@ -2593,7 +2600,9 @@ def brand_markup():
     A logo file next to generate.py (logo.svg, logo.png or logo.webp) is
     base64-inlined rather than linked, so both panels stay single
     self-contained files that work from file:// with nothing alongside them.
-    With no logo file the text stands on its own.
+    With no logo file the text stands on its own. Either way the whole thing
+    links to the site, opened in a new tab so a click never loses an unsaved
+    panel state or a running emulator.
     """
     import base64, os
     here = os.path.dirname(os.path.abspath(__file__))
@@ -2605,9 +2614,12 @@ def brand_markup():
             with open(f, "rb") as fh:
                 b64 = base64.b64encode(fh.read()).decode("ascii")
             print(f"  logo: inlined {fname} ({len(b64)//1024}KB base64)")
-            return (f'<img src="data:{mime};base64,{b64}" alt="The Key &amp; Cable Co.">'
-                    '<span>The Key &amp; Cable Co.</span>')
-    return '<span>The Key &amp; Cable Co.</span>'
+            return (f'<a class="brandlink" href="{SITE_HOME}" target="_blank"'
+                    f' rel="noopener noreferrer">'
+                    f'<img src="data:{mime};base64,{b64}" alt="The Key &amp; Cable Co.">'
+                    '<span>The Key &amp; Cable Co.</span></a>')
+    return (f'<a class="brandlink" href="{SITE_HOME}" target="_blank"'
+            ' rel="noopener noreferrer"><span>The Key &amp; Cable Co.</span></a>')
 
 
 def emit_html(path, transport="serial", extra_head="", extra_body=""):
