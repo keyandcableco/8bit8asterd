@@ -633,16 +633,11 @@
           <span class="readout" id="midiStatus">none</span>
           <span class="cc-label">MIDI In</span>
         </div>
-        <div class="cc">
-          <select id="midiModeSel">
-            <option value="notes">Notes</option>
-            <option value="chords">Chords</option>
-          </select>
-          <span class="cc-label">MIDI Mode</span>
-        </div>
+
       </div>
       <div class="piano-scroll"><div class="piano" id="piano"></div></div>
       <div class="pads" id="pads"></div>
+      <div class="cc-row" id="midiRoutes"></div>
     </div>
   </section>
 
@@ -1456,17 +1451,6 @@ function buildPlaySurface(){
     if (sp !== null && spcSel){ spcSel.value = sp; spacing = sp | 0; }
   } catch(e){}
 
-  const mm = document.getElementById('midiModeSel');
-  if (mm) mm.onchange = () => {
-    midiMode = mm.value;
-    midiHeld.clear();
-    try { localStorage.setItem('8b8.midiMode', midiMode); } catch(e){}
-  };
-  try {
-    const saved = localStorage.getItem('8b8.midiMode');
-    if (saved && mm){ mm.value = saved; midiMode = saved; }
-  } catch(e){}
-
   const showKb = makeOctave('kbOct', () => kbOct, v => { kbOct = v; showKbRange(); }, -3, 1);
   showKb();
   showKbRange();
@@ -1482,7 +1466,32 @@ function buildPlaySurface(){
 // matrix cell is pressed, which means the 8b8 applies its OWN octave,
 // inversion, spacing, Barry setting and temperament rather than echoing the
 // voicing it was sent.
-let midiMode = 'notes';
+// Each MIDI input gets its own role, because a single device can present
+// several ports with different jobs: the minichord exposes one port for its
+// chord section and another for its harp. Roles are remembered by device
+// name, so a controller keeps its assignment across sessions.
+const MIDI_ROLES = [
+  ['notes',  'Notes'],
+  ['chords', 'Chords'],
+  ['harp',   'Harp'],
+  ['off',    'Off'],
+];
+const midiRoles = {};                  // device name -> role
+function midiRoleFor(name){
+  if (midiRoles[name]) return midiRoles[name];
+  try {
+    const saved = localStorage.getItem('8b8.role.' + name);
+    if (saved) return (midiRoles[name] = saved);
+  } catch(e){}
+  return 'notes';
+}
+function setMidiRole(name, role){
+  midiRoles[name] = role;
+  harpLo = harpHi = null;              // relearn the incoming range
+  try { localStorage.setItem('8b8.role.' + name, role); } catch(e){}
+  if (role !== 'chords') midiHeld.clear();
+}
+
 const midiHeld = new Set();
 let detectTimer = null;
 
@@ -1550,12 +1559,57 @@ function midiChordUpdate(){
   refreshChord();
 }
 
-function midiNote(on, note, vel, chan){
-  if (midiMode !== 'chords' || chan === 9){
+// A harp note picks a string on the 8b8's OWN ladder, so the 8b8 plays its
+// own voicing rather than echoing the pitch it was sent.
+//
+// Matching by nearest pitch does not work: the two instruments cover
+// different registers, so everything above the top of this ladder collapses
+// onto its last string and a sweep stops moving. Instead the incoming range
+// is learned as it is played and mapped proportionally onto the twelve
+// strings, which makes a full sweep on one instrument a full sweep on the
+// other whatever register it arrives in. Until an octave has been seen there
+// is nothing to scale against, so it falls back to nearest pitch.
+let harpLo = null, harpHi = null;
+
+function harpPluck(note){
+  if (!strumNotes.length) return;
+  if (harpLo === null || note < harpLo) harpLo = note;
+  if (harpHi === null || note > harpHi) harpHi = note;
+
+  let best;
+  if (harpHi - harpLo >= 12){
+    const t = (note - harpLo) / (harpHi - harpLo);
+    best = Math.round(t * (strumNotes.length - 1));
+  } else {
+    best = 0;
+    let bd = 1e9;
+    for (let i = 0; i < strumNotes.length; i++){
+      const d = Math.abs(strumNotes[i] - note);
+      if (d < bd){ bd = d; best = i; }
+    }
+  }
+  best = Math.max(0, Math.min(strumNotes.length - 1, best));
+  const n = strumNotes[best];
+  playNote(n, 100, 0);
+  setTimeout(() => stopNote(n, 0), 400);
+  const el = document.querySelector('.strum .seg[data-seg="' + best + '"]');
+  if (el){ el.classList.add('lit'); setTimeout(() => el.classList.remove('lit'), 120); }
+}
+
+function midiNote(on, note, vel, chan, role){
+  role = role || 'notes';
+  if (role === 'off') return;
+
+  if (role === 'harp'){
+    if (on) harpPluck(note);
+    return;
+  }
+
+  if (role !== 'chords' || chan === 9){
     if (on) playNote(note, vel, chan); else stopNote(note, chan);
     return;
   }
-  // Chords mode: the notes are evidence, not something to play directly.
+  // Chords role: the notes are evidence, not something to play directly.
   if (on) midiHeld.add(note); else midiHeld.delete(note);
   clearTimeout(detectTimer);
   detectTimer = setTimeout(midiChordUpdate, 35);   // let the chord settle

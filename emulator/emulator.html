@@ -634,16 +634,11 @@
           <span class="readout" id="midiStatus">none</span>
           <span class="cc-label">MIDI In</span>
         </div>
-        <div class="cc">
-          <select id="midiModeSel">
-            <option value="notes">Notes</option>
-            <option value="chords">Chords</option>
-          </select>
-          <span class="cc-label">MIDI Mode</span>
-        </div>
+
       </div>
       <div class="piano-scroll"><div class="piano" id="piano"></div></div>
       <div class="pads" id="pads"></div>
+      <div class="cc-row" id="midiRoutes"></div>
     </div>
   </section>
 
@@ -806,17 +801,52 @@ function stopNote(note, chan){
 let midiAccess = null;
 
 function attachMidiInput(inp){
+  const name = inp.name || 'unnamed';
   inp.onmidimessage = m => {
     const st = m.data[0], d1 = m.data[1], d2 = m.data[2];
     const ch = st & 0x0F, cmd = st & 0xF0;
-    if (cmd === 0x90 && d2 > 0) midiNote(true, d1, d2, ch);
-    else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) midiNote(false, d1, 0, ch);
-    else if (cmd === 0xB0 && ready){
+    const role = midiRoleFor(name);
+    if (cmd === 0x90 && d2 > 0) midiNote(true, d1, d2, ch, role);
+    else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) midiNote(false, d1, 0, ch, role);
+    else if (cmd === 0xB0 && ready && role !== 'off'){
       // Control changes go to the firmware exactly as they would on the
       // hardware, so the CC map and MIDI Learn behave identically here.
       Module.ccall('emu_cc', null, ['number','number','number'], [ch, d1, d2]);
     }
   };
+}
+
+// One row per input, each with its own role. A minichord shows up as two
+// ports; set one to Chords and the other to Harp and the whole instrument
+// drives this one.
+function buildMidiRoutes(names){
+  const host = document.getElementById('midiRoutes');
+  if (!host) return;
+  host.innerHTML = '';
+  if (!names.length){
+    const cc = document.createElement('div');
+    cc.className = 'cc';
+    cc.innerHTML = '<span class="readout">no devices</span><span class="cc-label">MIDI Routing</span>';
+    host.appendChild(cc);
+    return;
+  }
+  names.forEach(name => {
+    const cc = document.createElement('div');
+    cc.className = 'cc';
+    const sel = document.createElement('select');
+    MIDI_ROLES.forEach(([v, label]) => {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = label;
+      sel.appendChild(o);
+    });
+    sel.value = midiRoleFor(name);
+    sel.onchange = () => setMidiRole(name, sel.value);
+    const lab = document.createElement('span');
+    lab.className = 'cc-label';
+    lab.textContent = name.length > 22 ? name.slice(0, 22) + '\u2026' : name;
+    cc.appendChild(sel); cc.appendChild(lab);
+    host.appendChild(cc);
+  });
 }
 
 function refreshMidiInputs(){
@@ -827,7 +857,8 @@ function refreshMidiInputs(){
     names.push(inp.name || 'unnamed');
   }
   const el = document.getElementById('midiStatus');
-  if (el) el.textContent = names.length ? names[0].slice(0, 18) : 'none';
+  if (el) el.textContent = names.length ? (names.length + ' port' + (names.length > 1 ? 's' : '')) : 'none';
+  buildMidiRoutes(names);
   return names;
 }
 
@@ -1488,17 +1519,6 @@ function buildPlaySurface(){
     if (sp !== null && spcSel){ spcSel.value = sp; spacing = sp | 0; }
   } catch(e){}
 
-  const mm = document.getElementById('midiModeSel');
-  if (mm) mm.onchange = () => {
-    midiMode = mm.value;
-    midiHeld.clear();
-    try { localStorage.setItem('8b8.midiMode', midiMode); } catch(e){}
-  };
-  try {
-    const saved = localStorage.getItem('8b8.midiMode');
-    if (saved && mm){ mm.value = saved; midiMode = saved; }
-  } catch(e){}
-
   const showKb = makeOctave('kbOct', () => kbOct, v => { kbOct = v; showKbRange(); }, -3, 1);
   showKb();
   showKbRange();
@@ -1514,7 +1534,32 @@ function buildPlaySurface(){
 // matrix cell is pressed, which means the 8b8 applies its OWN octave,
 // inversion, spacing, Barry setting and temperament rather than echoing the
 // voicing it was sent.
-let midiMode = 'notes';
+// Each MIDI input gets its own role, because a single device can present
+// several ports with different jobs: the minichord exposes one port for its
+// chord section and another for its harp. Roles are remembered by device
+// name, so a controller keeps its assignment across sessions.
+const MIDI_ROLES = [
+  ['notes',  'Notes'],
+  ['chords', 'Chords'],
+  ['harp',   'Harp'],
+  ['off',    'Off'],
+];
+const midiRoles = {};                  // device name -> role
+function midiRoleFor(name){
+  if (midiRoles[name]) return midiRoles[name];
+  try {
+    const saved = localStorage.getItem('8b8.role.' + name);
+    if (saved) return (midiRoles[name] = saved);
+  } catch(e){}
+  return 'notes';
+}
+function setMidiRole(name, role){
+  midiRoles[name] = role;
+  harpLo = harpHi = null;              // relearn the incoming range
+  try { localStorage.setItem('8b8.role.' + name, role); } catch(e){}
+  if (role !== 'chords') midiHeld.clear();
+}
+
 const midiHeld = new Set();
 let detectTimer = null;
 
@@ -1582,12 +1627,57 @@ function midiChordUpdate(){
   refreshChord();
 }
 
-function midiNote(on, note, vel, chan){
-  if (midiMode !== 'chords' || chan === 9){
+// A harp note picks a string on the 8b8's OWN ladder, so the 8b8 plays its
+// own voicing rather than echoing the pitch it was sent.
+//
+// Matching by nearest pitch does not work: the two instruments cover
+// different registers, so everything above the top of this ladder collapses
+// onto its last string and a sweep stops moving. Instead the incoming range
+// is learned as it is played and mapped proportionally onto the twelve
+// strings, which makes a full sweep on one instrument a full sweep on the
+// other whatever register it arrives in. Until an octave has been seen there
+// is nothing to scale against, so it falls back to nearest pitch.
+let harpLo = null, harpHi = null;
+
+function harpPluck(note){
+  if (!strumNotes.length) return;
+  if (harpLo === null || note < harpLo) harpLo = note;
+  if (harpHi === null || note > harpHi) harpHi = note;
+
+  let best;
+  if (harpHi - harpLo >= 12){
+    const t = (note - harpLo) / (harpHi - harpLo);
+    best = Math.round(t * (strumNotes.length - 1));
+  } else {
+    best = 0;
+    let bd = 1e9;
+    for (let i = 0; i < strumNotes.length; i++){
+      const d = Math.abs(strumNotes[i] - note);
+      if (d < bd){ bd = d; best = i; }
+    }
+  }
+  best = Math.max(0, Math.min(strumNotes.length - 1, best));
+  const n = strumNotes[best];
+  playNote(n, 100, 0);
+  setTimeout(() => stopNote(n, 0), 400);
+  const el = document.querySelector('.strum .seg[data-seg="' + best + '"]');
+  if (el){ el.classList.add('lit'); setTimeout(() => el.classList.remove('lit'), 120); }
+}
+
+function midiNote(on, note, vel, chan, role){
+  role = role || 'notes';
+  if (role === 'off') return;
+
+  if (role === 'harp'){
+    if (on) harpPluck(note);
+    return;
+  }
+
+  if (role !== 'chords' || chan === 9){
     if (on) playNote(note, vel, chan); else stopNote(note, chan);
     return;
   }
-  // Chords mode: the notes are evidence, not something to play directly.
+  // Chords role: the notes are evidence, not something to play directly.
   if (on) midiHeld.add(note); else midiHeld.delete(note);
   clearTimeout(detectTimer);
   detectTimer = setTimeout(midiChordUpdate, 35);   // let the chord settle
