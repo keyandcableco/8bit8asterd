@@ -836,26 +836,69 @@ function pollReplies(){
   for (const line of s.split('\n')) if (line.length) handleLine(line);
 }
 
-async function startAudio(){
+// iOS routes Web Audio through the "ambient" session, which the hardware
+// silent switch mutes. Playing a real media element promotes the session to
+// "playback", which ignores that switch. It has to start inside the same
+// user gesture, so it goes first.
+let iosUnmute = null;
+function promoteAudioSession(){
+  try {
+    if (!iosUnmute){
+      iosUnmute = new Audio('data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YSADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==');
+      iosUnmute.loop = true;
+      iosUnmute.setAttribute('playsinline', '');
+      iosUnmute.volume = 0.001;
+    }
+    const p = iosUnmute.play();
+    if (p && p.catch) p.catch(() => {});
+  } catch(e){}
+}
+
+let sawAudioCallback = false;
+
+function startAudio(){
   if (!window.Module || !Module.ccall){
     log('err','The emulator core has not loaded. Did you run build-wasm.sh?');
     setStatus('err','No core');
     return;
   }
-  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  await audioCtx.resume();
+  promoteAudioSession();
 
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  // Everything is built synchronously inside the gesture. Awaiting resume()
+  // first and creating the nodes afterwards leaves the gesture behind, which
+  // Safari treats as a non-user-initiated start.
   Module.ccall('emu_init', null, ['number'], [audioCtx.sampleRate]);
   heapPtr = Module._malloc(HEAP_SAMPLES * 4);
   ready = true;
 
-  node = audioCtx.createScriptProcessor(HEAP_SAMPLES, 0, 1);
+  // ONE input channel, not zero. Safari never fires onaudioprocess for a
+  // ScriptProcessorNode declared with no inputs, so on iPhone and iPad the
+  // node connects, the context runs, and nothing is ever rendered -- silence
+  // with no error anywhere.
+  node = audioCtx.createScriptProcessor(HEAP_SAMPLES, 1, 1);
   node.onaudioprocess = (e) => {
+    sawAudioCallback = true;
     const out = e.outputBuffer.getChannelData(0);
     Module.ccall('emu_render', null, ['number','number'], [heapPtr, out.length]);
     out.set(Module.HEAPF32.subarray(heapPtr >> 2, (heapPtr >> 2) + out.length));
   };
   node.connect(audioCtx.destination);
+
+  const r = audioCtx.resume();
+  if (r && r.catch) r.catch(() => {});
+
+  // Say something useful if the callback never runs, rather than sitting
+  // there looking connected.
+  sawAudioCallback = false;
+  setTimeout(() => {
+    if (sawAudioCallback) return;
+    log('err', 'Audio is connected but nothing is being rendered. '
+             + 'state=' + (audioCtx ? audioCtx.state : '?')
+             + ', rate=' + (audioCtx ? audioCtx.sampleRate : '?'));
+    log('err', 'On iPhone or iPad, check the side switch is not set to silent.');
+  }, 1200);
 
   startBtn.disabled = true; stopBtn.disabled = false;
   setStatus('on','Running');
@@ -866,6 +909,7 @@ async function startAudio(){
 }
 
 function stopAudio(){
+  if (iosUnmute) { try { iosUnmute.pause(); } catch(e){} }
   if (node) { node.disconnect(); node = null; }
   if (audioCtx) { audioCtx.close(); audioCtx = null; }
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
@@ -876,6 +920,18 @@ function stopAudio(){
 
 startBtn.onclick = startAudio;
 stopBtn.onclick  = stopAudio;
+
+// iOS suspends the context when the page goes to the background, and coming
+// back does not resume it on its own -- the panel looks alive and plays
+// nothing. Nudge it whenever the page is shown again or is next touched.
+function nudgeAudio(){
+  if (!audioCtx || audioCtx.state !== 'suspended') return;
+  const r = audioCtx.resume();
+  if (r && r.catch) r.catch(() => {});
+  promoteAudioSession();
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) nudgeAudio(); });
+window.addEventListener('pointerdown', nudgeAudio, true);
 
 /* ---- playing it ---- */
 function playNote(note, vel, chan){
