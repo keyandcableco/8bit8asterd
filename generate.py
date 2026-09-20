@@ -856,6 +856,8 @@ HTML_TEMPLATE = r"""<!doctype html>
   }
   .step.beat{ border-color:var(--body-lit); }
   .step.on{ background:var(--accent); }
+  .step.tail{ background:var(--accent-dim); }
+  .step.note.tail{ background:var(--warn); opacity:.55; }
   .step.playing{ box-shadow:inset 0 0 0 2px var(--warn); }
   .seqhead{ display:flex; gap:3px; margin:0 0 5px 75px; }
   .seqhead div{
@@ -1205,8 +1207,24 @@ __TRANSPORT_UI__
         <button class="btn" id="seqClear">Clear</button>
         <span class="label">Pattern</span>
         <select id="seqPreset"></select>
+        <span class="label">Page</span>
+        <select id="seqPageSel">
+          <option value="0">1&ndash;16</option>
+          <option value="1">17&ndash;32</option>
+          <option value="2">33&ndash;48</option>
+          <option value="3">49&ndash;64</option>
+        </select>
         <span class="label">Length</span>
         <select id="seqLen"></select>
+        <span class="label">Sig</span>
+        <select id="seqSig">
+          <option value="4">4/4</option>
+          <option value="3">3/4</option>
+          <option value="6">6/8</option>
+          <option value="5">5/4</option>
+          <option value="7">7/8</option>
+        </select>
+        <button class="btn" id="seqTap">Tap</button>
         <span class="label">Tempo</span>
         <input type="range" id="seqTempo" min="50" max="200" value="110" style="flex:1 1 120px;max-width:200px">
         <span class="value" id="seqBpm">110 BPM</span>
@@ -2392,7 +2410,8 @@ document.addEventListener('pointerdown', e => {
 // Sixteen steps against a drift-corrected clock: each tick schedules the
 // next from when it SHOULD have fired, so the pattern does not wander the
 // way a plain setInterval does.
-const SEQ_STEPS = 16;
+const SEQ_STEPS = 64;          // four pages of sixteen
+const SEQ_PAGE = 16;
 const SEQ_ROWS = [
   { name: 'Kick',   note: 36 },
   { name: 'Snare',  note: 38 },
@@ -2417,10 +2436,13 @@ const NOTE_ROW_NAMES = ['B','A#','A','G#','G','F#','F','E','D#','D','C#','C'];
 const NOTE_SEMIS     = [11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0];
 const NOTE_BASE = 48;                       // C3 at octave 0
 let noteOct = 0;
-let seqLength = SEQ_STEPS;
+let seqLength = 16;            // how much of it actually plays
+let seqPage = 0;               // which sixteen are on screen
+let seqBeatsPerBar = 4;        // where the accents fall
+let stretch = null;            // the drag currently resizing a note
 
-let seqGrid = SEQ_ROWS.map(() => new Array(SEQ_STEPS).fill(false));
-let noteGrid = NOTE_SEMIS.map(() => new Array(SEQ_STEPS).fill(false));
+let seqGrid = SEQ_ROWS.map(() => new Array(SEQ_STEPS).fill(0));
+let noteGrid = NOTE_SEMIS.map(() => new Array(SEQ_STEPS).fill(0));
 let noteCells = [];
 let seqPlaying = false;
 let seqCells = [];             // cached elements: querying 128 cells per step was wasteful
@@ -2428,19 +2450,18 @@ let seqLastPainted = -1;
 
 // Rows are handed to the engine as a 16-bit mask each, which is all the
 // timing side needs to know about the pattern.
+function cellsOf(grid, ri){
+  const cells = [];
+  for (let s = 0; s < SEQ_STEPS; s++) if (grid[ri][s]) cells.push([s, grid[ri][s]]);
+  return cells;
+}
+
 function seqRowsForEngine(){
-  const rows = SEQ_ROWS.map((r, ri) => {
-    let mask = 0;
-    for (let s = 0; s < SEQ_STEPS; s++) if (seqGrid[ri][s]) mask |= (1 << s);
-    return { note: r.note, mask, chan: 9 };
-  });
-  // Pitch rows follow, on channel 0, so they go through the melodic voices
-  // and get a note-off rather than being one-shots like the drums.
-  NOTE_SEMIS.forEach((semi, ri) => {
-    let mask = 0;
-    for (let s = 0; s < SEQ_STEPS; s++) if (noteGrid[ri][s]) mask |= (1 << s);
-    rows.push({ note: noteNoteFor(ri), mask, chan: 0 });
-  });
+  const rows = SEQ_ROWS.map((r, ri) => ({ note: r.note, chan: 9, cells: cellsOf(seqGrid, ri) }));
+  // Pitch rows follow, on channel 0, so they run through the melodic voices
+  // and are released rather than being one-shots like the drums.
+  NOTE_SEMIS.forEach((semi, ri) =>
+    rows.push({ note: noteNoteFor(ri), chan: 0, cells: cellsOf(noteGrid, ri) }));
   return rows;
 }
 
@@ -2474,12 +2495,19 @@ function showNoteRange(){
 
 // Steps beyond the pattern length are dimmed rather than removed, so
 // shortening a pattern does not throw away what was drawn past the end.
+// Beat markers follow the time signature, and steps past the pattern length
+// are dimmed rather than removed so shortening never discards work.
 function paintLength(){
   document.querySelectorAll('.step').forEach(c => {
-    c.classList.toggle('past', (c.dataset.s | 0) >= seqLength);
+    const abs = absStep(c.dataset.s | 0);
+    c.classList.toggle('past', abs >= seqLength);
+    c.classList.toggle('beat', abs % seqBeatsPerBar === 0);
   });
   document.querySelectorAll('.seqhead div').forEach((d, i) => {
-    d.style.opacity = i >= seqLength ? '0.28' : '';
+    const abs = absStep(i);
+    d.textContent = (abs % seqBeatsPerBar === 0) ? String(abs / seqBeatsPerBar + 1) : '';
+    d.className = (abs % seqBeatsPerBar === 0) ? 'beat' : '';
+    d.style.opacity = abs >= seqLength ? '0.28' : '';
   });
 }
 
@@ -2494,17 +2522,11 @@ function buildNoteSequencer(){
     nm.onclick = () => previewNote(noteNoteFor(ri));
     row.appendChild(nm);
     noteCells[ri] = [];
-    for (let si = 0; si < SEQ_STEPS; si++){
+    for (let si = 0; si < SEQ_PAGE; si++){
       const c = document.createElement('div');
-      c.className = 'step note' + (si % 4 === 0 ? ' beat' : '');
+      c.className = 'step note';
       c.dataset.r = ri; c.dataset.s = si;
-      c.addEventListener('pointerdown', e => {
-        e.preventDefault();
-        noteGrid[ri][si] = !noteGrid[ri][si];
-        c.classList.toggle('on', noteGrid[ri][si]);
-        if (noteGrid[ri][si]) previewNote(noteNoteFor(ri));
-        seqEnginePattern(seqRowsForEngine());
-      });
+      attachCell(c, noteGrid, noteCells, ri, si, () => previewNote(noteNoteFor(ri)));
       noteCells[ri][si] = c;
       row.appendChild(c);
     }
@@ -2524,9 +2546,9 @@ function buildSequencer(){
   const rows = document.getElementById('seqRows');
   if (!head || !rows) return;
 
-  for (let i = 0; i < SEQ_STEPS; i++){
+  for (let i = 0; i < SEQ_PAGE; i++){
     const d = document.createElement('div');
-    d.textContent = (i % 4 === 0) ? String(i / 4 + 1) : '';
+    d.textContent = '';
     if (i % 4 === 0) d.className = 'beat';
     head.appendChild(d);
   }
@@ -2539,16 +2561,11 @@ function buildSequencer(){
     nm.onclick = () => playNote(r.note, 110, 9);       // audition
     row.appendChild(nm);
     seqCells[ri] = [];
-    for (let si = 0; si < SEQ_STEPS; si++){
+    for (let si = 0; si < SEQ_PAGE; si++){
       const c = document.createElement('div');
-      c.className = 'step' + (si % 4 === 0 ? ' beat' : '');
-      c.addEventListener('pointerdown', e => {
-        e.preventDefault();
-        seqGrid[ri][si] = !seqGrid[ri][si];
-        c.classList.toggle('on', seqGrid[ri][si]);
-        if (seqGrid[ri][si]) playNote(r.note, 110, 9);
-        seqEnginePattern(seqRowsForEngine());
-      });
+      c.className = 'step';
+      c.dataset.r = ri; c.dataset.s = si;
+      attachCell(c, seqGrid, seqCells, ri, si, () => playNote(r.note, 110, 9));
       seqCells[ri][si] = c;
       row.appendChild(c);
     }
@@ -2570,9 +2587,10 @@ function buildSequencer(){
       o.value = n; o.textContent = n + ' step' + (n > 1 ? 's' : '');
       lenSel.appendChild(o);
     }
+    lenSel.value = 16;
     lenSel.value = seqLength;
     lenSel.onchange = () => {
-      seqLength = parseInt(lenSel.value, 10) || SEQ_STEPS;
+      seqLength = parseInt(lenSel.value, 10) || 16;
       paintLength();
       if (seqPlaying){        // restart the clock on the new length
         seqEngineStop();
@@ -2582,7 +2600,7 @@ function buildSequencer(){
     };
     try {
       const saved = localStorage.getItem('8b8.seqLen');
-      if (saved){ seqLength = parseInt(saved, 10) || SEQ_STEPS; lenSel.value = seqLength; }
+      if (saved){ seqLength = parseInt(saved, 10) || 16; lenSel.value = seqLength; }
     } catch(e){}
   }
 
@@ -2590,6 +2608,45 @@ function buildSequencer(){
   tempo.oninput = () => {
     document.getElementById('seqBpm').textContent = tempo.value + ' BPM';
     seqEngineTempo(parseInt(tempo.value, 10) || 110);
+  };
+
+  const pageSel = document.getElementById('seqPageSel');
+  if (pageSel) pageSel.onchange = () => {
+    seqPage = pageSel.value | 0;
+    paintSeq();
+    paintLength();
+  };
+
+  const sigSel = document.getElementById('seqSig');
+  if (sigSel) sigSel.onchange = () => {
+    seqBeatsPerBar = parseInt(sigSel.value, 10) || 4;
+    paintLength();
+    try { localStorage.setItem('8b8.seqSig', seqBeatsPerBar); } catch(e){}
+  };
+  try {
+    const sv = localStorage.getItem('8b8.seqSig');
+    if (sv && sigSel){ sigSel.value = sv; seqBeatsPerBar = parseInt(sv, 10) || 4; }
+  } catch(e){}
+
+  // Tap tempo: average the gaps between the last few taps. Gaps beyond two
+  // seconds start a fresh count, since that is someone coming back to it
+  // rather than keeping time.
+  let taps = [];
+  const tapBtn = document.getElementById('seqTap');
+  if (tapBtn) tapBtn.onclick = () => {
+    const now = performance.now();
+    if (taps.length && now - taps[taps.length - 1] > 2000) taps = [];
+    taps.push(now);
+    if (taps.length > 5) taps.shift();
+    if (taps.length < 2){ tapBtn.textContent = 'Tap\u2026'; return; }
+    let sum = 0;
+    for (let i = 1; i < taps.length; i++) sum += taps[i] - taps[i - 1];
+    const bpm = Math.max(50, Math.min(200, Math.round(60000 / (sum / (taps.length - 1)))));
+    const t = document.getElementById('seqTempo');
+    t.value = bpm;
+    document.getElementById('seqBpm').textContent = bpm + ' BPM';
+    seqEngineTempo(bpm);
+    tapBtn.textContent = 'Tap ' + bpm;
   };
 
   document.getElementById('seqPlay').onclick = toggleSeq;
@@ -2602,10 +2659,81 @@ function buildSequencer(){
   requestAnimationFrame(paintPlayhead);
 }
 
+// A note is drawn as a head plus a tail across the steps it covers, so its
+// length is visible at a glance rather than implied.
+function paintGrid(cells, grid){
+  for (let r = 0; r < cells.length; r++){
+    const covered = new Array(SEQ_PAGE).fill(0);   // 1 = head, 2 = tail
+    for (let s = 0; s < SEQ_STEPS; s++){
+      const len = grid[r][s];
+      if (!len) continue;
+      for (let k = 0; k < len; k++){
+        const abs = s + k;
+        if (abs >= SEQ_STEPS) break;
+        const col = abs - seqPage * SEQ_PAGE;
+        if (col >= 0 && col < SEQ_PAGE) covered[col] = k === 0 ? 1 : 2;
+      }
+    }
+    for (let c = 0; c < SEQ_PAGE; c++){
+      const el = cells[r][c];
+      if (!el) continue;
+      el.classList.toggle('on',   covered[c] === 1);
+      el.classList.toggle('tail', covered[c] === 2);
+    }
+  }
+}
+
 function paintSeq(){
-  for (let r = 0; r < seqCells.length; r++)
-    for (let s = 0; s < SEQ_STEPS; s++)
-      seqCells[r][s].classList.toggle('on', seqGrid[r][s]);
+  paintGrid(seqCells, seqGrid);
+  paintGrid(noteCells, noteGrid);
+}
+
+function absStep(col){ return seqPage * SEQ_PAGE + col; }
+
+// Press an empty cell to place a note and start dragging its length; press a
+// note's head to remove it. Dragging right past the next cells stretches it.
+function attachCell(el, grid, cells, ri, col, onPreview){
+  el.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    const s = absStep(col);
+    if (grid[ri][s]){
+      grid[ri][s] = 0;
+      stretch = null;
+    } else {
+      // Clicking inside an existing note's tail trims that note instead.
+      let owner = -1;
+      for (let k = 1; k < 16 && s - k >= 0; k++){
+        if (grid[ri][s - k] > k){ owner = s - k; break; }
+      }
+      if (owner >= 0){
+        grid[ri][owner] = s - owner;      // shorten it to end here
+      } else {
+        grid[ri][s] = 1;
+        stretch = { grid, ri, start: s };
+        if (onPreview) onPreview(ri);
+        try { el.setPointerCapture(e.pointerId); } catch(err){}
+      }
+    }
+    paintSeq();
+    seqEnginePattern(seqRowsForEngine());
+  });
+
+  el.addEventListener('pointermove', e => {
+    if (!stretch || stretch.grid !== grid || stretch.ri !== ri) return;
+    const under = document.elementFromPoint(e.clientX, e.clientY);
+    const hit = under && under.closest ? under.closest('.step') : null;
+    if (!hit || hit.dataset.r === undefined) return;
+    const s = absStep(hit.dataset.s | 0);
+    const len = Math.max(1, Math.min(SEQ_STEPS - stretch.start, s - stretch.start + 1));
+    if (grid[stretch.ri][stretch.start] === len) return;
+    grid[stretch.ri][stretch.start] = len;
+    paintSeq();
+    seqEnginePattern(seqRowsForEngine());
+  });
+
+  const end = () => { stretch = null; };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
 }
 
 // The playhead is read from the engine rather than set by it, so the
@@ -2613,14 +2741,14 @@ function paintSeq(){
 function paintPlayhead(){
   const step = seqPlaying ? seqEngineStep() : -1;
   if (step !== seqLastPainted){
-    if (seqLastPainted >= 0){
-      for (let r = 0; r < seqCells.length; r++) seqCells[r][seqLastPainted].classList.remove('playing');
-      for (let r = 0; r < noteCells.length; r++) noteCells[r][seqLastPainted].classList.remove('playing');
-    }
-    if (step >= 0){
-      for (let r = 0; r < seqCells.length; r++) seqCells[r][step].classList.add('playing');
-      for (let r = 0; r < noteCells.length; r++) noteCells[r][step].classList.add('playing');
-    }
+    const mark = (abs, on) => {
+      const col = abs - seqPage * SEQ_PAGE;
+      if (col < 0 || col >= SEQ_PAGE) return;
+      for (let r = 0; r < seqCells.length; r++) seqCells[r][col].classList.toggle('playing', on);
+      for (let r = 0; r < noteCells.length; r++) noteCells[r][col].classList.toggle('playing', on);
+    };
+    if (seqLastPainted >= 0) mark(seqLastPainted, false);
+    if (step >= 0) mark(step, true);
     seqLastPainted = step;
   }
   requestAnimationFrame(paintPlayhead);
@@ -2630,8 +2758,8 @@ function loadPattern(name){
   const p = SEQ_PATTERNS[name] || {};
   seqGrid = SEQ_ROWS.map(r => {
     const on = p[r.name] || [];
-    const row = new Array(SEQ_STEPS).fill(false);
-    on.forEach(i => { if (i < SEQ_STEPS) row[i] = true; });
+    const row = new Array(SEQ_STEPS).fill(0);
+    on.forEach(i => { if (i < SEQ_STEPS) row[i] = 1; });
     return row;
   });
   paintSeq();
@@ -2992,13 +3120,13 @@ def emit_temperaments(path):
     print(f"wrote {path}  ({len(rows)} temperaments, +/-{span} cents)")
 
 
-SERIAL_TRANSPORT_JS = "/* ==== Web Serial ======================================================== */\nlet port = null, reader = null, writer = null, inBuf = '';\nconst statusPill = document.getElementById('statusPill');\nconst statusText = document.getElementById('statusText');\nconst connectBtn = document.getElementById('connectBtn');\nconst disconnectBtn = document.getElementById('disconnectBtn');\n\nfunction setStatus(mode, text){\n  statusPill.className = 'status-pill' + (mode ? ' ' + mode : '');\n  statusText.textContent = text;\n}\n\nasync function connect(){\n  try{\n    port = await navigator.serial.requestPort();\n    await port.open({ baudRate: 115200 });\n    const dec = new TextDecoderStream();\n    port.readable.pipeTo(dec.writable).catch(()=>{});\n    reader = dec.readable.getReader();\n    const enc = new TextEncoderStream();\n    enc.readable.pipeTo(port.writable).catch(()=>{});\n    writer = enc.writable.getWriter();\n    connectBtn.disabled = true; disconnectBtn.disabled = false;\n    setStatus('on','Connected');\n    log('sys','Connected.');\n    readLoop();\n    sawLayout = false;\n    send('DUMP');\n    // Firmware older than the handshake answers DUMP with PRESET: but no\n    // LAYOUT: line at all, which is itself a mismatch worth reporting.\n    setTimeout(() => {\n      if (!sawLayout && port){\n        document.getElementById('mismatchDetail').textContent =\n          'The unit did not report a parameter layout at all, so it predates ' +\n          'this panel. This panel expects layout 0x' +\n          LAYOUT_VERSION.toString(16).toUpperCase() + ' with ' + NUM_PARAMS + ' parameters.';\n        document.getElementById('mismatch').style.display = 'block';\n        log('err', 'No LAYOUT reply \\u2014 flashed firmware is out of date.');\n      }\n    }, 1500);\n  }catch(err){\n    setStatus('err','Connect failed');\n    log('err','Connect failed: ' + err.message);\n  }\n}\n\nasync function disconnect(){\n  try{ await reader?.cancel(); }catch(e){}\n  try{ await writer?.close(); }catch(e){}\n  try{ await port?.close(); }catch(e){}\n  reader = writer = port = null;\n  connectBtn.disabled = false; disconnectBtn.disabled = true;\n  setStatus('','Disconnected');\n  log('sys','Disconnected.');\n}\n\nasync function readLoop(){\n  try{\n    while(true){\n      const { value, done } = await reader.read();\n      if (done) break;\n      inBuf += value;\n      let idx;\n      while ((idx = inBuf.indexOf('\\n')) >= 0){\n        const line = inBuf.slice(0, idx).replace('\\r','');\n        inBuf = inBuf.slice(idx + 1);\n        if (line.length) handleLine(line);\n      }\n    }\n  }catch(err){\n    log('err','Read error: ' + err.message);\n  }finally{\n    if (port) disconnect();\n  }\n}\n\nfunction playNote(note, vel, chan){ send('NON:' + (chan||0) + ':' + note + ':' + (vel||100)); }\nfunction stopNote(note, chan){ send('NOF:' + (chan||0) + ':' + note); }\n\nfunction send(cmd){\n  log('tx','\\u00bb ' + cmd);\n  if (writer) writer.write(cmd + '\\n').catch(err => log('err','Write failed: ' + err.message));\n}\n\n\n\nconnectBtn.onclick = connect;\ndisconnectBtn.onclick = disconnect;\nif (!('serial' in navigator)){\n  document.getElementById('unsupported').style.display = 'block';\n  connectBtn.disabled = true;\n}\n\n\n/* ---- sequencer engine: timer driven ---- */\n// Notes reach the unit over a serial link, so there is nothing to be\n// sample-accurate against. A drift-corrected timer is the best available:\n// each tick is scheduled from when it SHOULD have fired, not from now.\nlet seqRowsCache = [], seqHeld = [], seqTimer = null, seqNextAt = 0, seqPos = -1, seqBpm = 110, seqLen = 16;\n\nfunction seqEnginePattern(rows){ seqRowsCache = rows; }\nfunction seqEngineTempo(bpm){ seqBpm = bpm; }\nfunction seqEngineStep(){ return seqPos; }\nfunction seqEngineStop(){\n  if (seqTimer) clearTimeout(seqTimer);\n  seqTimer = null; seqPos = -1;\n  seqHeld.forEach(n => stopNote(n, 0));\n  seqHeld.length = 0;\n}\nfunction seqEngineStart(bpm, steps){\n  seqBpm = bpm; seqLen = steps; seqPos = 0;\n  seqNextAt = performance.now();\n  const tick = () => {\n    // Release melodic notes from the previous step before striking the next,\n    // or a pitch row would hold its first note forever. Drums are one-shots.\n    seqHeld.forEach(n => stopNote(n, 0));\n    seqHeld.length = 0;\n    seqRowsCache.forEach(r => {\n      if (!(r.mask & (1 << seqPos))) return;\n      const ch = (r.chan === undefined) ? 9 : r.chan;\n      playNote(r.note, 110, ch);\n      if (ch !== 9) seqHeld.push(r.note);\n    });\n    seqPos = (seqPos + 1) % seqLen;\n    seqNextAt += 60000 / seqBpm / 4;\n    seqTimer = setTimeout(tick, Math.max(0, seqNextAt - performance.now()));\n  };\n  tick();\n}\n"
+SERIAL_TRANSPORT_JS = "/* ==== Web Serial ======================================================== */\nlet port = null, reader = null, writer = null, inBuf = '';\nconst statusPill = document.getElementById('statusPill');\nconst statusText = document.getElementById('statusText');\nconst connectBtn = document.getElementById('connectBtn');\nconst disconnectBtn = document.getElementById('disconnectBtn');\n\nfunction setStatus(mode, text){\n  statusPill.className = 'status-pill' + (mode ? ' ' + mode : '');\n  statusText.textContent = text;\n}\n\nasync function connect(){\n  try{\n    port = await navigator.serial.requestPort();\n    await port.open({ baudRate: 115200 });\n    const dec = new TextDecoderStream();\n    port.readable.pipeTo(dec.writable).catch(()=>{});\n    reader = dec.readable.getReader();\n    const enc = new TextEncoderStream();\n    enc.readable.pipeTo(port.writable).catch(()=>{});\n    writer = enc.writable.getWriter();\n    connectBtn.disabled = true; disconnectBtn.disabled = false;\n    setStatus('on','Connected');\n    log('sys','Connected.');\n    readLoop();\n    sawLayout = false;\n    send('DUMP');\n    // Firmware older than the handshake answers DUMP with PRESET: but no\n    // LAYOUT: line at all, which is itself a mismatch worth reporting.\n    setTimeout(() => {\n      if (!sawLayout && port){\n        document.getElementById('mismatchDetail').textContent =\n          'The unit did not report a parameter layout at all, so it predates ' +\n          'this panel. This panel expects layout 0x' +\n          LAYOUT_VERSION.toString(16).toUpperCase() + ' with ' + NUM_PARAMS + ' parameters.';\n        document.getElementById('mismatch').style.display = 'block';\n        log('err', 'No LAYOUT reply \\u2014 flashed firmware is out of date.');\n      }\n    }, 1500);\n  }catch(err){\n    setStatus('err','Connect failed');\n    log('err','Connect failed: ' + err.message);\n  }\n}\n\nasync function disconnect(){\n  try{ await reader?.cancel(); }catch(e){}\n  try{ await writer?.close(); }catch(e){}\n  try{ await port?.close(); }catch(e){}\n  reader = writer = port = null;\n  connectBtn.disabled = false; disconnectBtn.disabled = true;\n  setStatus('','Disconnected');\n  log('sys','Disconnected.');\n}\n\nasync function readLoop(){\n  try{\n    while(true){\n      const { value, done } = await reader.read();\n      if (done) break;\n      inBuf += value;\n      let idx;\n      while ((idx = inBuf.indexOf('\\n')) >= 0){\n        const line = inBuf.slice(0, idx).replace('\\r','');\n        inBuf = inBuf.slice(idx + 1);\n        if (line.length) handleLine(line);\n      }\n    }\n  }catch(err){\n    log('err','Read error: ' + err.message);\n  }finally{\n    if (port) disconnect();\n  }\n}\n\nfunction playNote(note, vel, chan){ send('NON:' + (chan||0) + ':' + note + ':' + (vel||100)); }\nfunction stopNote(note, chan){ send('NOF:' + (chan||0) + ':' + note); }\n\nfunction send(cmd){\n  log('tx','\\u00bb ' + cmd);\n  if (writer) writer.write(cmd + '\\n').catch(err => log('err','Write failed: ' + err.message));\n}\n\n\n\nconnectBtn.onclick = connect;\ndisconnectBtn.onclick = disconnect;\nif (!('serial' in navigator)){\n  document.getElementById('unsupported').style.display = 'block';\n  connectBtn.disabled = true;\n}\n\n\n/* ---- sequencer engine: timer driven ---- */\n// Notes reach the unit over a serial link, so there is nothing to be\n// sample-accurate against. A drift-corrected timer is the best available:\n// each tick is scheduled from when it SHOULD have fired, not from now.\nlet seqRowsCache = [], seqHeld = [], seqTimer = null, seqNextAt = 0, seqPos = -1, seqBpm = 110, seqLen = 16;\n\nfunction seqEnginePattern(rows){\n  // Expand the sparse cells into a per-step lookup for the tick loop.\n  seqRowsCache = rows.map(r => {\n    const lens = [];\n    for (const [step, len] of r.cells) lens[step] = len;\n    return { note: r.note, chan: r.chan, lens };\n  });\n}\nfunction seqEngineTempo(bpm){ seqBpm = bpm; }\nfunction seqEngineStep(){ return seqPos; }\nfunction seqEngineStop(){\n  if (seqTimer) clearTimeout(seqTimer);\n  seqTimer = null; seqPos = -1;\n  seqHeld.forEach(h => stopNote(h.note, 0));\n  seqHeld.length = 0;\n}\nfunction seqEngineStart(bpm, steps){\n  seqBpm = bpm; seqLen = steps; seqPos = 0;\n  seqNextAt = performance.now();\n  const tick = () => {\n    // Release melodic notes from the previous step before striking the next,\n    // or a pitch row would hold its first note forever. Drums are one-shots.\n    for (let i = seqHeld.length - 1; i >= 0; i--){\n      if (--seqHeld[i].left <= 0){\n        stopNote(seqHeld[i].note, 0);\n        seqHeld.splice(i, 1);\n      }\n    }\n    seqRowsCache.forEach(r => {\n      const len = r.lens ? (r.lens[seqPos] || 0) : 0;\n      if (!len) return;\n      const ch = (r.chan === undefined) ? 9 : r.chan;\n      playNote(r.note, 110, ch);\n      // Notes reach the unit down a wire, so the length is counted in ticks\n      // here rather than scheduled against an audio clock.\n      if (ch !== 9) seqHeld.push({ note: r.note, left: len });\n    });\n    seqPos = (seqPos + 1) % seqLen;\n    seqNextAt += 60000 / seqBpm / 4;\n    seqTimer = setTimeout(tick, Math.max(0, seqNextAt - performance.now()));\n  };\n  tick();\n}\n"
 
 SERIAL_TRANSPORT_UI = '        <button class="btn" id="connectBtn">Connect</button>\n        <button class="btn danger" id="disconnectBtn" disabled>Disconnect</button>'
 
 WASM_TRANSPORT_UI = '        <button class="btn" id="startBtn">Start Audio</button>\n        <button class="btn danger" id="stopBtn" disabled>Stop</button>'
 
-WASM_TRANSPORT_JS = '/* ==== Emulated transport ================================================ */\n// The firmware itself, compiled to WebAssembly, driving three emulated\n// AY-3-8910s into Web Audio. The panel above is byte-identical to the one\n// that talks to real hardware over serial -- the only thing that changes is\n// what send() writes to. Same firmware, same parameters, same protocol.\n\nlet audioCtx = null, node = null, ready = false, pollTimer = null;\nconst HEAP_SAMPLES = 2048;\nlet heapPtr = 0;\n\nconst statusPill = document.getElementById(\'statusPill\');\nconst statusText = document.getElementById(\'statusText\');\nconst startBtn = document.getElementById(\'startBtn\');\nconst stopBtn  = document.getElementById(\'stopBtn\');\n\nfunction setStatus(mode, text){\n  statusPill.className = \'status-pill\' + (mode ? \' \' + mode : \'\');\n  statusText.textContent = text;\n}\n\nfunction send(cmd){\n  log(\'tx\',\'\\u00bb \' + cmd);\n  if (ready) Module.ccall(\'emu_send_line\', null, [\'string\'], [cmd]);\n}\n\nfunction pollReplies(){\n  if (!ready) return;\n  const s = Module.ccall(\'emu_read_lines\', \'string\', [], []);\n  if (!s) return;\n  for (const line of s.split(\'\\n\')) if (line.length) handleLine(line);\n}\n\n// iOS routes Web Audio through the "ambient" session, which the hardware\n// silent switch mutes. Playing a real media element promotes the session to\n// "playback", which ignores that switch. It has to start inside the same\n// user gesture, so it goes first.\nlet iosUnmute = null;\nfunction promoteAudioSession(){\n  try {\n    if (!iosUnmute){\n      iosUnmute = new Audio(\'data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YSADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\');\n      iosUnmute.loop = true;\n      iosUnmute.setAttribute(\'playsinline\', \'\');\n      iosUnmute.volume = 0.001;\n    }\n    const p = iosUnmute.play();\n    if (p && p.catch) p.catch(() => {});\n  } catch(e){}\n}\n\nlet sawAudioCallback = false;\n\nfunction startAudio(){\n  if (!window.Module || !Module.ccall){\n    log(\'err\',\'The emulator core has not loaded. Did you run build-wasm.sh?\');\n    setStatus(\'err\',\'No core\');\n    return;\n  }\n  promoteAudioSession();\n\n  audioCtx = new (window.AudioContext || window.webkitAudioContext)();\n\n  // Everything is built synchronously inside the gesture. Awaiting resume()\n  // first and creating the nodes afterwards leaves the gesture behind, which\n  // Safari treats as a non-user-initiated start.\n  Module.ccall(\'emu_init\', null, [\'number\'], [audioCtx.sampleRate]);\n  heapPtr = Module._malloc(HEAP_SAMPLES * 4);\n  ready = true;\n\n  // ONE input channel, not zero. Safari never fires onaudioprocess for a\n  // ScriptProcessorNode declared with no inputs, so on iPhone and iPad the\n  // node connects, the context runs, and nothing is ever rendered -- silence\n  // with no error anywhere.\n  node = audioCtx.createScriptProcessor(HEAP_SAMPLES, 1, 1);\n  node.onaudioprocess = (e) => {\n    sawAudioCallback = true;\n    const out = e.outputBuffer.getChannelData(0);\n    Module.ccall(\'emu_render\', null, [\'number\',\'number\'], [heapPtr, out.length]);\n    out.set(Module.HEAPF32.subarray(heapPtr >> 2, (heapPtr >> 2) + out.length));\n  };\n  node.connect(audioCtx.destination);\n\n  const r = audioCtx.resume();\n  if (r && r.catch) r.catch(() => {});\n\n  // Say something useful if the callback never runs, rather than sitting\n  // there looking connected.\n  sawAudioCallback = false;\n  setTimeout(() => {\n    if (sawAudioCallback) return;\n    log(\'err\', \'Audio is connected but nothing is being rendered. \'\n             + \'state=\' + (audioCtx ? audioCtx.state : \'?\')\n             + \', rate=\' + (audioCtx ? audioCtx.sampleRate : \'?\'));\n    log(\'err\', \'On iPhone or iPad, check the side switch is not set to silent.\');\n  }, 1200);\n\n  startBtn.disabled = true; stopBtn.disabled = false;\n  setStatus(\'on\',\'Running\');\n  log(\'sys\',\'Emulator running at \' + audioCtx.sampleRate + \'Hz.\');\n\n  pollTimer = setInterval(pollReplies, 60);\n  send(\'DUMP\');\n}\n\nfunction stopAudio(){\n  if (iosUnmute) { try { iosUnmute.pause(); } catch(e){} }\n  if (node) { node.disconnect(); node = null; }\n  if (audioCtx) { audioCtx.close(); audioCtx = null; }\n  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }\n  ready = false;\n  startBtn.disabled = false; stopBtn.disabled = true;\n  setStatus(\'\',\'Stopped\');\n}\n\nstartBtn.onclick = startAudio;\nstopBtn.onclick  = stopAudio;\n\n// iOS suspends the context when the page goes to the background, and coming\n// back does not resume it on its own -- the panel looks alive and plays\n// nothing. Nudge it whenever the page is shown again or is next touched.\nfunction nudgeAudio(){\n  if (!audioCtx || audioCtx.state !== \'suspended\') return;\n  const r = audioCtx.resume();\n  if (r && r.catch) r.catch(() => {});\n  promoteAudioSession();\n}\ndocument.addEventListener(\'visibilitychange\', () => { if (!document.hidden) nudgeAudio(); });\nwindow.addEventListener(\'pointerdown\', nudgeAudio, true);\n\n/* ---- playing it ---- */\nfunction playNote(note, vel, chan){\n  if (ready) Module.ccall(\'emu_note_on\', null, [\'number\',\'number\',\'number\'], [chan||0, note, vel||100]);\n}\nfunction stopNote(note, chan){\n  if (ready) Module.ccall(\'emu_note_off\', null, [\'number\',\'number\'], [chan||0, note]);\n}\n\n// Real MIDI hardware, if the browser offers it. Chrome, Edge, Opera and\n// Firefox 108+ have the Web MIDI API; Safari and iOS do not. It also needs a\n// secure context, so https or localhost.\nlet midiAccess = null;\n\nfunction attachMidiInput(inp){\n  inp.onmidimessage = m => {\n    const st = m.data[0], d1 = m.data[1], d2 = m.data[2];\n    const ch = st & 0x0F, cmd = st & 0xF0;\n    if (cmd === 0x90 && d2 > 0) playNote(d1, d2, ch);\n    else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) stopNote(d1, ch);\n    else if (cmd === 0xB0 && ready){\n      // Control changes go to the firmware exactly as they would on the\n      // hardware, so the CC map and MIDI Learn behave identically here.\n      Module.ccall(\'emu_cc\', null, [\'number\',\'number\',\'number\'], [ch, d1, d2]);\n    }\n  };\n}\n\nfunction refreshMidiInputs(){\n  if (!midiAccess) return [];\n  const names = [];\n  for (const inp of midiAccess.inputs.values()){\n    attachMidiInput(inp);\n    names.push(inp.name || \'unnamed\');\n  }\n  const el = document.getElementById(\'midiStatus\');\n  if (el) el.textContent = names.length ? names[0].slice(0, 18) : \'none\';\n  return names;\n}\n\nif (navigator.requestMIDIAccess){\n  navigator.requestMIDIAccess().then(a => {\n    midiAccess = a;\n    // Controllers are routinely plugged in after the page is open, and\n    // without this they would simply never be heard from.\n    a.onstatechange = () => {\n      const n = refreshMidiInputs();\n      log(\'sys\', \'MIDI devices: \' + (n.length ? n.join(\', \') : \'none\'));\n    };\n    const n = refreshMidiInputs();\n    log(\'sys\', n.length ? (\'MIDI in: \' + n.join(\', \'))\n                        : \'MIDI ready \\u2014 no device found yet. Plug one in.\');\n  }).catch(e => log(\'err\', \'MIDI unavailable: \' + e.message));\n} else {\n  log(\'sys\', \'This browser has no Web MIDI. Chrome, Edge or Firefox 108+ do.\');\n}\n\n/* ---- sequencer engine: timed inside the audio render ---- */\n// Sample-counted in C++ rather than by setTimeout, because on this page the\n// audio callback runs on the main thread and any timer shares it. Measured\n// drift is about one sample over four seconds.\nfunction seqEnginePattern(rows){\n  if (!ready) return;\n  rows.forEach((r, i) => Module.ccall(\'emu_seq_row\', null,\n    [\'number\',\'number\',\'number\',\'number\'], [i, r.note, r.mask, r.chan]));\n}\nfunction seqEngineStart(bpm, steps){\n  if (!ready) return;\n  Module.ccall(\'emu_seq_start\', null, [\'number\',\'number\'], [bpm, steps]);\n}\nfunction seqEngineTempo(bpm){\n  if (ready) Module.ccall(\'emu_seq_tempo\', null, [\'number\'], [bpm]);\n}\nfunction seqEngineStop(){\n  if (ready) Module.ccall(\'emu_seq_stop\', null, [], []);\n}\nfunction seqEngineStep(){\n  return ready ? Module.ccall(\'emu_seq_step\', \'number\', [], []) : -1;\n}\n'
+WASM_TRANSPORT_JS = '/* ==== Emulated transport ================================================ */\n// The firmware itself, compiled to WebAssembly, driving three emulated\n// AY-3-8910s into Web Audio. The panel above is byte-identical to the one\n// that talks to real hardware over serial -- the only thing that changes is\n// what send() writes to. Same firmware, same parameters, same protocol.\n\nlet audioCtx = null, node = null, ready = false, pollTimer = null;\nconst HEAP_SAMPLES = 2048;\nlet heapPtr = 0;\n\nconst statusPill = document.getElementById(\'statusPill\');\nconst statusText = document.getElementById(\'statusText\');\nconst startBtn = document.getElementById(\'startBtn\');\nconst stopBtn  = document.getElementById(\'stopBtn\');\n\nfunction setStatus(mode, text){\n  statusPill.className = \'status-pill\' + (mode ? \' \' + mode : \'\');\n  statusText.textContent = text;\n}\n\nfunction send(cmd){\n  log(\'tx\',\'\\u00bb \' + cmd);\n  if (ready) Module.ccall(\'emu_send_line\', null, [\'string\'], [cmd]);\n}\n\nfunction pollReplies(){\n  if (!ready) return;\n  const s = Module.ccall(\'emu_read_lines\', \'string\', [], []);\n  if (!s) return;\n  for (const line of s.split(\'\\n\')) if (line.length) handleLine(line);\n}\n\n// iOS routes Web Audio through the "ambient" session, which the hardware\n// silent switch mutes. Playing a real media element promotes the session to\n// "playback", which ignores that switch. It has to start inside the same\n// user gesture, so it goes first.\nlet iosUnmute = null;\nfunction promoteAudioSession(){\n  try {\n    if (!iosUnmute){\n      iosUnmute = new Audio(\'data:audio/wav;base64,UklGRkQDAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YSADAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\');\n      iosUnmute.loop = true;\n      iosUnmute.setAttribute(\'playsinline\', \'\');\n      iosUnmute.volume = 0.001;\n    }\n    const p = iosUnmute.play();\n    if (p && p.catch) p.catch(() => {});\n  } catch(e){}\n}\n\nlet sawAudioCallback = false;\n\nfunction startAudio(){\n  if (!window.Module || !Module.ccall){\n    log(\'err\',\'The emulator core has not loaded. Did you run build-wasm.sh?\');\n    setStatus(\'err\',\'No core\');\n    return;\n  }\n  promoteAudioSession();\n\n  audioCtx = new (window.AudioContext || window.webkitAudioContext)();\n\n  // Everything is built synchronously inside the gesture. Awaiting resume()\n  // first and creating the nodes afterwards leaves the gesture behind, which\n  // Safari treats as a non-user-initiated start.\n  Module.ccall(\'emu_init\', null, [\'number\'], [audioCtx.sampleRate]);\n  heapPtr = Module._malloc(HEAP_SAMPLES * 4);\n  ready = true;\n\n  // ONE input channel, not zero. Safari never fires onaudioprocess for a\n  // ScriptProcessorNode declared with no inputs, so on iPhone and iPad the\n  // node connects, the context runs, and nothing is ever rendered -- silence\n  // with no error anywhere.\n  node = audioCtx.createScriptProcessor(HEAP_SAMPLES, 1, 1);\n  node.onaudioprocess = (e) => {\n    sawAudioCallback = true;\n    const out = e.outputBuffer.getChannelData(0);\n    Module.ccall(\'emu_render\', null, [\'number\',\'number\'], [heapPtr, out.length]);\n    out.set(Module.HEAPF32.subarray(heapPtr >> 2, (heapPtr >> 2) + out.length));\n  };\n  node.connect(audioCtx.destination);\n\n  const r = audioCtx.resume();\n  if (r && r.catch) r.catch(() => {});\n\n  // Say something useful if the callback never runs, rather than sitting\n  // there looking connected.\n  sawAudioCallback = false;\n  setTimeout(() => {\n    if (sawAudioCallback) return;\n    log(\'err\', \'Audio is connected but nothing is being rendered. \'\n             + \'state=\' + (audioCtx ? audioCtx.state : \'?\')\n             + \', rate=\' + (audioCtx ? audioCtx.sampleRate : \'?\'));\n    log(\'err\', \'On iPhone or iPad, check the side switch is not set to silent.\');\n  }, 1200);\n\n  startBtn.disabled = true; stopBtn.disabled = false;\n  setStatus(\'on\',\'Running\');\n  log(\'sys\',\'Emulator running at \' + audioCtx.sampleRate + \'Hz.\');\n\n  pollTimer = setInterval(pollReplies, 60);\n  send(\'DUMP\');\n}\n\nfunction stopAudio(){\n  if (iosUnmute) { try { iosUnmute.pause(); } catch(e){} }\n  if (node) { node.disconnect(); node = null; }\n  if (audioCtx) { audioCtx.close(); audioCtx = null; }\n  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }\n  ready = false;\n  startBtn.disabled = false; stopBtn.disabled = true;\n  setStatus(\'\',\'Stopped\');\n}\n\nstartBtn.onclick = startAudio;\nstopBtn.onclick  = stopAudio;\n\n// iOS suspends the context when the page goes to the background, and coming\n// back does not resume it on its own -- the panel looks alive and plays\n// nothing. Nudge it whenever the page is shown again or is next touched.\nfunction nudgeAudio(){\n  if (!audioCtx || audioCtx.state !== \'suspended\') return;\n  const r = audioCtx.resume();\n  if (r && r.catch) r.catch(() => {});\n  promoteAudioSession();\n}\ndocument.addEventListener(\'visibilitychange\', () => { if (!document.hidden) nudgeAudio(); });\nwindow.addEventListener(\'pointerdown\', nudgeAudio, true);\n\n/* ---- playing it ---- */\nfunction playNote(note, vel, chan){\n  if (ready) Module.ccall(\'emu_note_on\', null, [\'number\',\'number\',\'number\'], [chan||0, note, vel||100]);\n}\nfunction stopNote(note, chan){\n  if (ready) Module.ccall(\'emu_note_off\', null, [\'number\',\'number\'], [chan||0, note]);\n}\n\n// Real MIDI hardware, if the browser offers it. Chrome, Edge, Opera and\n// Firefox 108+ have the Web MIDI API; Safari and iOS do not. It also needs a\n// secure context, so https or localhost.\nlet midiAccess = null;\n\nfunction attachMidiInput(inp){\n  inp.onmidimessage = m => {\n    const st = m.data[0], d1 = m.data[1], d2 = m.data[2];\n    const ch = st & 0x0F, cmd = st & 0xF0;\n    if (cmd === 0x90 && d2 > 0) playNote(d1, d2, ch);\n    else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) stopNote(d1, ch);\n    else if (cmd === 0xB0 && ready){\n      // Control changes go to the firmware exactly as they would on the\n      // hardware, so the CC map and MIDI Learn behave identically here.\n      Module.ccall(\'emu_cc\', null, [\'number\',\'number\',\'number\'], [ch, d1, d2]);\n    }\n  };\n}\n\nfunction refreshMidiInputs(){\n  if (!midiAccess) return [];\n  const names = [];\n  for (const inp of midiAccess.inputs.values()){\n    attachMidiInput(inp);\n    names.push(inp.name || \'unnamed\');\n  }\n  const el = document.getElementById(\'midiStatus\');\n  if (el) el.textContent = names.length ? names[0].slice(0, 18) : \'none\';\n  return names;\n}\n\nif (navigator.requestMIDIAccess){\n  navigator.requestMIDIAccess().then(a => {\n    midiAccess = a;\n    // Controllers are routinely plugged in after the page is open, and\n    // without this they would simply never be heard from.\n    a.onstatechange = () => {\n      const n = refreshMidiInputs();\n      log(\'sys\', \'MIDI devices: \' + (n.length ? n.join(\', \') : \'none\'));\n    };\n    const n = refreshMidiInputs();\n    log(\'sys\', n.length ? (\'MIDI in: \' + n.join(\', \'))\n                        : \'MIDI ready \\u2014 no device found yet. Plug one in.\');\n  }).catch(e => log(\'err\', \'MIDI unavailable: \' + e.message));\n} else {\n  log(\'sys\', \'This browser has no Web MIDI. Chrome, Edge or Firefox 108+ do.\');\n}\n\n/* ---- sequencer engine: timed inside the audio render ---- */\n// Sample-counted in C++ rather than by setTimeout, because on this page the\n// audio callback runs on the main thread and any timer shares it. Measured\n// drift is about one sample over four seconds.\nfunction seqEnginePattern(rows){\n  if (!ready) return;\n  Module.ccall(\'emu_seq_clear\', null, [], []);\n  rows.forEach((r, i) => {\n    Module.ccall(\'emu_seq_row\', null, [\'number\',\'number\',\'number\'], [i, r.note, r.chan]);\n    // Sparse: only the filled cells cross the boundary.\n    for (const [step, len] of r.cells){\n      Module.ccall(\'emu_seq_cell\', null, [\'number\',\'number\',\'number\'], [i, step, len]);\n    }\n  });\n}\nfunction seqEngineStart(bpm, steps){\n  if (!ready) return;\n  Module.ccall(\'emu_seq_start\', null, [\'number\',\'number\'], [bpm, steps]);\n}\nfunction seqEngineTempo(bpm){\n  if (ready) Module.ccall(\'emu_seq_tempo\', null, [\'number\'], [bpm]);\n}\nfunction seqEngineStop(){\n  if (ready) Module.ccall(\'emu_seq_stop\', null, [], []);\n}\nfunction seqEngineStep(){\n  return ready ? Module.ccall(\'emu_seq_step\', \'number\', [], []) : -1;\n}\n'
 
 EMU_EXTRA_HEAD = '<script>var Module = { onRuntimeInitialized: function(){ if (window.onCoreReady) window.onCoreReady(); } };</script>\n<script src="8b8.js"></script>'
 

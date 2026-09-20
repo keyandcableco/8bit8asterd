@@ -60,7 +60,11 @@ static double  dcPrev = 0.0, dcOut = 0.0;
 // main thread. Counting samples inside the render makes the beat exact: a
 // step lands on the sample it should, no matter what the browser is doing.
 #define SEQ_MAX_ROWS 32
-static uint16_t seqMask[SEQ_MAX_ROWS];     // one bit per step
+#define SEQ_MAX_STEPS 64
+// A length per cell rather than a bit per step: 0 is empty, otherwise how
+// many steps the note is held for. A bitmask could not express that, and it
+// capped the pattern at the 16 bits it happened to have.
+static uint8_t  seqCell[SEQ_MAX_ROWS][SEQ_MAX_STEPS];
 static uint8_t  seqNote[SEQ_MAX_ROWS];
 static uint8_t  seqChan[SEQ_MAX_ROWS];     // 9 = percussion, else melodic
 static double   seqGateLeft[SEQ_MAX_ROWS]; // samples until note-off, 0 = idle
@@ -85,7 +89,7 @@ void emu_init(double rate) {
   memset(emuEeprom, 0xFF, sizeof emuEeprom);
   for (int i = 0; i < 3; i++) chips[i].reset();
   seqRunning = false; seqRows = 0; seqCurStep = 0; seqAcc = 0.0;
-  memset(seqMask, 0, sizeof seqMask);
+  memset(seqCell, 0, sizeof seqCell);
   memset(seqChan, 9, sizeof seqChan);
   memset(seqGateLeft, 0, sizeof seqGateLeft);
   setup();
@@ -129,17 +133,19 @@ void emu_render(float *out, int n) {
       if (seqAcc >= seqSamplesPerStep) {
         seqAcc -= seqSamplesPerStep;
         for (int r = 0; r < seqRows; r++) {
-          if (!(seqMask[r] & (1u << seqCurStep))) continue;
+          const uint8_t len = seqCell[r][seqCurStep];
+          if (!len) continue;
           const uint8_t ch = seqChan[r] & 0x0F;
           MidiUSB.push(midiEventPacket_t{0x09, (uint8_t)(0x90 | ch), seqNote[r], 110});
           if (ch != 9) {
-            // Release any note this row is still holding before re-striking,
-            // then gate the new one at 60% of a step so repeats articulate.
+            // Release anything this row still holds before re-striking.
             if (seqGateLeft[r] > 0.0) {
               MidiUSB.push(midiEventPacket_t{0x08, (uint8_t)(0x80 | ch), seqGateNote[r], 0});
             }
             seqGateNote[r] = seqNote[r];
-            seqGateLeft[r] = seqSamplesPerStep * 0.6;
+            // Held for its own length, less a sliver so a note butted up
+            // against the next one still articulates instead of slurring.
+            seqGateLeft[r] = seqSamplesPerStep * ((double)len - 0.08);
           }
         }
         seqCurStep = (seqCurStep + 1) % seqSteps;
@@ -163,17 +169,29 @@ void emu_render(float *out, int n) {
 }
 
 // ---- sequencer -------------------------------------------------------------
-void emu_seq_row(int row, int note, int mask, int chan) {
+void emu_seq_row(int row, int note, int chan) {
   if (row < 0 || row >= SEQ_MAX_ROWS) return;
   seqNote[row] = (uint8_t)note;
-  seqMask[row] = (uint16_t)mask;
   seqChan[row] = (uint8_t)chan;
   if (row + 1 > seqRows) seqRows = row + 1;
 }
 
+// Cells are sent one at a time rather than as a block, because a pattern is
+// sparse: a busy sixteen-row, sixty-four-step grid still has well under a
+// hundred filled cells, and this keeps the boundary a plain number call.
+void emu_seq_cell(int row, int step, int len) {
+  if (row < 0 || row >= SEQ_MAX_ROWS) return;
+  if (step < 0 || step >= SEQ_MAX_STEPS) return;
+  seqCell[row][step] = (uint8_t)(len < 0 ? 0 : (len > SEQ_MAX_STEPS ? SEQ_MAX_STEPS : len));
+}
+
+void emu_seq_clear() {
+  memset(seqCell, 0, sizeof seqCell);
+}
+
 void emu_seq_start(double bpm, int steps) {
   if (bpm < 20.0) bpm = 20.0;
-  seqSteps = (steps > 0 && steps <= 16) ? steps : 16;
+  seqSteps = (steps > 0 && steps <= SEQ_MAX_STEPS) ? steps : 16;
   for (int r = 0; r < SEQ_MAX_ROWS; r++) seqGateLeft[r] = 0.0;
   seqSamplesPerStep = sampleRate * 60.0 / bpm / 4.0;   // sixteenth notes
   seqCurStep = 0;
