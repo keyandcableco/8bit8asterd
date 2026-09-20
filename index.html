@@ -355,7 +355,10 @@
   .pad b{ display:block; font-size:calc(6px * var(--ui-scale)); opacity:.6; margin-bottom:5px; }
 
   /* ---- Sequencer ---- */
-  .step.past{ opacity:.28; }             /* beyond the pattern length */
+  /* Outside the pattern: clearly inactive, but a note placed there must
+     still be legible -- at a quarter opacity it vanished entirely. */
+  .step.past{ opacity:.55; border-style:dotted; }
+  .step.past.on, .step.past.tail{ opacity:.7; }
   .seqrow.sharprow .seqname{ opacity:.6; }
   .step.note.on{ background:var(--warn); }
 
@@ -2275,6 +2278,22 @@ function buildSequencer(){
   const pageSel = document.getElementById('seqPageSel');
   if (pageSel) pageSel.onchange = () => {
     seqPage = pageSel.value | 0;
+    // Turning to a page outside the pattern used to show sixteen dead cells:
+    // they accepted notes but nothing played them, and at the dimmed opacity
+    // the notes were barely visible either. Reaching for a page is a clear
+    // enough signal that you want those steps, so the pattern grows to cover
+    // it. Shortening it again afterwards still works and keeps the notes.
+    const need = (seqPage + 1) * SEQ_PAGE;
+    if (seqLength < need){
+      seqLength = need;
+      const ls = document.getElementById('seqLen');
+      if (ls) ls.value = seqLength;
+      try { localStorage.setItem('8b8.seqLen', seqLength); } catch(e){}
+      if (seqPlaying){
+        seqEngineStop();
+        seqEngineStart(parseInt(document.getElementById('seqTempo').value, 10) || 110, seqLength);
+      }
+    }
     paintSeq();
     paintLength();
   };
