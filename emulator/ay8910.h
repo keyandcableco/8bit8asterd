@@ -100,11 +100,16 @@ public:
     return out / 3.0f;
   }
 
-  // The chip's DAC is logarithmic, roughly 3dB per step.
+  // The chip's measured DAC. It is NOT a uniform 3dB ladder: the steps run
+  // from about 1.4dB at the top to 3.5dB at the bottom, about 37dB in all.
+  // The previous table was a flat 3dB per step and, worse, jumped a full 6dB
+  // between the top two entries -- so every level control read as steeper
+  // here than on the hardware, and the first notch off full lost twice what
+  // it should have.
   static float dac(uint8_t v) {
     static const float t[16] = {
-      0.0000f, 0.0056f, 0.0079f, 0.0112f, 0.0158f, 0.0224f, 0.0316f, 0.0447f,
-      0.0631f, 0.0891f, 0.1259f, 0.1778f, 0.2512f, 0.3548f, 0.5012f, 1.0000f
+      0.0000f, 0.0137f, 0.0205f, 0.0291f, 0.0423f, 0.0618f, 0.0847f, 0.1369f,
+      0.1691f, 0.2647f, 0.3527f, 0.4499f, 0.5704f, 0.6873f, 0.8482f, 1.0000f
     };
     return t[v & 0x0F];
   }

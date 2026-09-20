@@ -1905,7 +1905,9 @@ static void update100Hz() {
     // level at all the voice is moved onto its own software amplitude.
     // Slightly softer transient, which is why 15 leaves it alone entirely.
     if (params[P_MIX_DRUM] < 15 && m_playing[i] == PERC_NOTE && voices[i].isPlaying()) {
-      int da = ((voices[i].m_ampl >> 6) * params[P_MIX_DRUM]) / 15;
+      uint8_t dcut = pgm_read_byte(&MIX_ATTEN[params[P_MIX_DRUM] & 15]);
+      int da = (voices[i].m_ampl >> 6) - (int)dcut;
+      if (da < 0) da = 0;
       if (da < 0) da = 0;
       if (da > 15) da = 15;
       psg.regs[i % 3][PSGRegs::TONEAAMPL + (i / 3)] = (uint8_t)da;  // M clear
@@ -1974,7 +1976,10 @@ static void update100Hz() {
 
       int a = (voices[i].m_ampl >> 6) - tremCut;
       if (a < 0) a = 0;
-      if (params[P_MIX_TONE] < 15) a = (a * params[P_MIX_TONE]) / 15;
+      if (params[P_MIX_TONE] < 15) {
+        uint8_t cut = pgm_read_byte(&MIX_ATTEN[params[P_MIX_TONE] & 15]);
+        a = (a > (int)cut) ? a - (int)cut : 0;
+      }
 
       // Noise blend: mixes the AY noise generator into the voice. NOTE:
       // the noise period register is per-chip and shared with percussion

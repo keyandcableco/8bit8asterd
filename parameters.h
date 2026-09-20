@@ -95,4 +95,16 @@ static const uint16_t ENV_RATE[33] PROGMEM = {
   283, 233, 192, 158, 130, 108, 89, 73, 60, 50, 41,
 };
 
+// Master mixer attenuation, in amplitude-register steps, indexed by
+// the mixer setting. Applied by SUBTRACTION, which is a true dB cut
+// and treats a quiet note the same as a loud one -- multiplying the
+// register instead truncated a decaying note to silence several fader
+// positions before a full one. The curve is an audio taper: the top
+// half covers about 13dB and it accelerates below that, because the
+// AY's own steps grow from roughly 1.5dB at the top to 3.5dB at the
+// bottom and a straight mapping therefore dives.
+static const uint8_t MIX_ATTEN[16] PROGMEM = {
+  15, 13, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 2, 1, 1, 0
+};
+
 #endif // PARAMETERS_H
