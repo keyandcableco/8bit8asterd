@@ -1228,6 +1228,14 @@ __TRANSPORT_UI__
           <option value="7">7/8</option>
         </select>
         <button class="btn" id="seqTap">Tap</button>
+        <span class="label">Copy to</span>
+        <select id="seqCopyTo">
+          <option value="0">1&ndash;16</option>
+          <option value="1">17&ndash;32</option>
+          <option value="2">33&ndash;48</option>
+          <option value="3">49&ndash;64</option>
+        </select>
+        <button class="btn" id="seqCopyBtn">Copy</button>
         <span class="label">Tempo</span>
         <input type="range" id="seqTempo" min="50" max="200" value="110" style="flex:1 1 120px;max-width:200px">
         <span class="value" id="seqBpm">110 BPM</span>
@@ -2668,8 +2676,16 @@ function buildSequencer(){
     tapBtn.textContent = 'Tap ' + bpm;
   };
 
+  const copySel = document.getElementById('seqCopyTo');
+  const copyBtn = document.getElementById('seqCopyBtn');
+  if (copyBtn) copyBtn.onclick = () => {
+    copyPageTo(copySel.value | 0);
+    copyBtn.textContent = 'Copied';
+    setTimeout(() => { copyBtn.textContent = 'Copy'; }, 900);
+  };
+
   document.getElementById('seqPlay').onclick = toggleSeq;
-  document.getElementById('seqClear').onclick = () => loadPattern('Empty');
+  document.getElementById('seqClear').onclick = () => loadPattern('Empty');   // this page
 
   buildNoteSequencer();
   loadPattern('Four/Four');
@@ -2773,15 +2789,44 @@ function paintPlayhead(){
   requestAnimationFrame(paintPlayhead);
 }
 
+// Fills the CURRENT PAGE only, so each page can carry a different kit
+// pattern. Mutates the existing arrays rather than replacing them: the cell
+// handlers captured these references when they were built, and swapping the
+// array out left every drum click writing to an orphaned copy while the
+// display read the new one.
 function loadPattern(name){
   const p = SEQ_PATTERNS[name] || {};
-  seqGrid = SEQ_ROWS.map(r => {
+  const base = seqPage * SEQ_PAGE;
+  SEQ_ROWS.forEach((r, ri) => {
     const on = p[r.name] || [];
-    const row = new Array(SEQ_STEPS).fill(0);
-    on.forEach(i => { if (i < SEQ_STEPS) row[i] = 1; });
-    return row;
+    for (let s = 0; s < SEQ_PAGE; s++) seqGrid[ri][base + s] = 0;
+    on.forEach(i => { if (i < SEQ_PAGE) seqGrid[ri][base + i] = 1; });
   });
   paintSeq();
+  seqEnginePattern(seqRowsForEngine());
+}
+
+// Copies everything on the page currently shown -- drums and notes -- onto
+// another page, and grows the pattern to include it.
+function copyPageTo(target){
+  if (target === seqPage) return;
+  const from = seqPage * SEQ_PAGE, to = target * SEQ_PAGE;
+  [[seqGrid, SEQ_ROWS.length], [noteGrid, NOTE_SEMIS.length]].forEach(([grid, rows]) => {
+    for (let r = 0; r < rows; r++)
+      for (let s = 0; s < SEQ_PAGE; s++) grid[r][to + s] = grid[r][from + s];
+  });
+  const need = (target + 1) * SEQ_PAGE;
+  if (seqLength < need){
+    seqLength = need;
+    const ls = document.getElementById('seqLen');
+    if (ls) ls.value = seqLength;
+    if (seqPlaying){
+      seqEngineStop();
+      seqEngineStart(parseInt(document.getElementById('seqTempo').value, 10) || 110, seqLength);
+    }
+  }
+  paintSeq();
+  paintLength();
   seqEnginePattern(seqRowsForEngine());
 }
 
