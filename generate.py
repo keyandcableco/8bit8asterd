@@ -836,6 +836,30 @@ HTML_TEMPLATE = r"""<!doctype html>
   .pad.down{ background:var(--accent); color:var(--on-accent); }
   .pad b{ display:block; font-size:calc(6px * var(--ui-scale)); opacity:.6; margin-bottom:5px; }
 
+  /* ---- Transport: pinned so the sequencer can be stopped from any
+         section, not only from the one it lives in ---- */
+  .transport{
+    position:sticky; top:env(safe-area-inset-top, 0px); z-index:50;
+    display:flex; align-items:center; gap:12px;
+    background:linear-gradient(180deg, var(--body) 0%, var(--body-dark) 100%);
+    border:2px solid var(--bezel);
+    box-shadow: inset 0 2px 0 var(--body-lit), 0 4px 10px rgba(0,0,0,.5);
+    padding:10px 13px; margin-bottom:12px;
+  }
+  .transport .btn.play{
+    font-size:calc(11px * var(--ui-scale));
+    padding:13px 28px; min-width:110px;
+    background:linear-gradient(180deg, var(--accent-lit) 0%, var(--accent) 100%);
+    color:var(--on-accent);
+  }
+  .transport .btn.play.running{
+    background:linear-gradient(180deg, var(--warn) 0%, var(--accent-dim) 100%);
+  }
+  .transport .tinfo{
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    color:var(--text-dim); letter-spacing:.05em;
+  }
+
   /* ---- Sequencer ---- */
   /* Outside the pattern: clearly inactive, but a note placed there must
      still be legible -- at a quarter opacity it vanished entirely. */
@@ -843,6 +867,30 @@ HTML_TEMPLATE = r"""<!doctype html>
   .step.past.on, .step.past.tail{ opacity:.7; }
   .seqrow.sharprow .seqname{ opacity:.6; }
   .step.note.on{ background:var(--warn); }
+
+  /* ---- Transport: pinned so the sequencer can be stopped from any
+         section, not only from the one it lives in ---- */
+  .transport{
+    position:sticky; top:env(safe-area-inset-top, 0px); z-index:50;
+    display:flex; align-items:center; gap:12px;
+    background:linear-gradient(180deg, var(--body) 0%, var(--body-dark) 100%);
+    border:2px solid var(--bezel);
+    box-shadow: inset 0 2px 0 var(--body-lit), 0 4px 10px rgba(0,0,0,.5);
+    padding:10px 13px; margin-bottom:12px;
+  }
+  .transport .btn.play{
+    font-size:calc(11px * var(--ui-scale));
+    padding:13px 28px; min-width:110px;
+    background:linear-gradient(180deg, var(--accent-lit) 0%, var(--accent) 100%);
+    color:var(--on-accent);
+  }
+  .transport .btn.play.running{
+    background:linear-gradient(180deg, var(--warn) 0%, var(--accent-dim) 100%);
+  }
+  .transport .tinfo{
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    color:var(--text-dim); letter-spacing:.05em;
+  }
 
   /* ---- Sequencer ---- */
   .seq{ padding:0 13px 13px; overflow-x:auto; }
@@ -1051,6 +1099,11 @@ __TRANSPORT_UI__
     every control here writes to the wrong parameter on the unit.
   </div>
 
+  <div class="transport" id="transport">
+    <button class="btn play" id="seqPlay">Play</button>
+    <span class="tinfo" id="transportInfo">&mdash;</span>
+  </div>
+
   <div class="bar">
     <button class="btn" id="settingsBtn">Settings</button>
     <span class="spacer"></span>
@@ -1206,7 +1259,6 @@ __TRANSPORT_UI__
     <div class="module">
       <h2>Drum Sequencer</h2>
       <div class="bar" style="margin:0 13px 10px;">
-        <button class="btn" id="seqPlay">Play</button>
         <button class="btn" id="seqClear">Clear</button>
         <span class="label">Pattern</span>
         <select id="seqPreset"></select>
@@ -2449,6 +2501,7 @@ const NOTE_BASE = 48;                       // C3 at octave 0
 let noteOct = 0;
 let seqLength = 16;            // how much of it actually plays
 let seqPage = 0;               // which sixteen are on screen
+let maxPageOpened = 0;         // the loop covers up to here, and no further
 let seqBeatsPerBar = 4;        // where the accents fall
 let stretch = null;            // the drag currently resizing a note
 
@@ -2508,6 +2561,29 @@ function showNoteRange(){
 // shortening a pattern does not throw away what was drawn past the end.
 // Beat markers follow the time signature, and steps past the pattern length
 // are dimmed rather than removed so shortening never discards work.
+// One place to change the loop length, so the select, the engine and the
+// dimming can never disagree.
+function setSeqLength(n){
+  seqLength = Math.max(1, Math.min(SEQ_STEPS, n));
+  const ls = document.getElementById('seqLen');
+  if (ls) ls.value = seqLength;
+  if (seqPlaying){
+    seqEngineStop();
+    seqEngineStart(parseInt(document.getElementById('seqTempo').value, 10) || 110, seqLength);
+  }
+  paintLength();
+  updateTransport();
+}
+
+function updateTransport(){
+  const el = document.getElementById('transportInfo');
+  if (!el) return;
+  const bpm = document.getElementById('seqTempo');
+  el.textContent = (seqPlaying ? 'RUNNING' : 'STOPPED') +
+                   '  \u00b7  ' + seqLength + ' steps' +
+                   '  \u00b7  ' + (bpm ? bpm.value : '?') + ' BPM';
+}
+
 function paintLength(){
   document.querySelectorAll('.step').forEach(c => {
     const abs = absStep(c.dataset.s | 0);
@@ -2601,24 +2677,18 @@ function buildSequencer(){
     lenSel.value = 16;
     lenSel.value = seqLength;
     lenSel.onchange = () => {
-      seqLength = parseInt(lenSel.value, 10) || 16;
-      paintLength();
-      if (seqPlaying){        // restart the clock on the new length
-        seqEngineStop();
-        seqEngineStart(parseInt(document.getElementById('seqTempo').value, 10) || 110, seqLength);
-      }
-      try { localStorage.setItem('8b8.seqLen', seqLength); } catch(e){}
+      setSeqLength(parseInt(lenSel.value, 10) || 16);
     };
-    try {
-      const saved = localStorage.getItem('8b8.seqLen');
-      if (saved){ seqLength = parseInt(saved, 10) || 16; lenSel.value = seqLength; }
-    } catch(e){}
+    // Deliberately not remembered between visits: a length restored from a
+    // previous session looped sixty-four steps while page one was on screen,
+    // with no visible reason for it.
   }
 
   const tempo = document.getElementById('seqTempo');
   tempo.oninput = () => {
     document.getElementById('seqBpm').textContent = tempo.value + ' BPM';
     seqEngineTempo(parseInt(tempo.value, 10) || 110);
+    updateTransport();
   };
 
   const pageSel = document.getElementById('seqPageSel');
@@ -2629,16 +2699,14 @@ function buildSequencer(){
     // the notes were barely visible either. Reaching for a page is a clear
     // enough signal that you want those steps, so the pattern grows to cover
     // it. Shortening it again afterwards still works and keeps the notes.
-    const need = (seqPage + 1) * SEQ_PAGE;
-    if (seqLength < need){
-      seqLength = need;
-      const ls = document.getElementById('seqLen');
-      if (ls) ls.value = seqLength;
-      try { localStorage.setItem('8b8.seqLen', seqLength); } catch(e){}
-      if (seqPlaying){
-        seqEngineStop();
-        seqEngineStart(parseInt(document.getElementById('seqTempo').value, 10) || 110, seqLength);
-      }
+    // The loop covers the pages that have actually been opened: stay on
+    // 1-16 and it loops sixteen steps, reach page three and it loops
+    // forty-eight. It never shrinks on its own, since going back to look at
+    // an earlier page is not a request to throw the later ones out of the
+    // loop -- the Length control is there for that.
+    if (seqPage > maxPageOpened){
+      maxPageOpened = seqPage;
+      setSeqLength((maxPageOpened + 1) * SEQ_PAGE);
     }
     paintSeq();
     paintLength();
@@ -2691,6 +2759,7 @@ function buildSequencer(){
   loadPattern('Four/Four');
   document.getElementById('seqPreset').value = 'Four/Four';
   paintLength();
+  updateTransport();
   requestAnimationFrame(paintPlayhead);
 }
 
@@ -2815,16 +2884,8 @@ function copyPageTo(target){
     for (let r = 0; r < rows; r++)
       for (let s = 0; s < SEQ_PAGE; s++) grid[r][to + s] = grid[r][from + s];
   });
-  const need = (target + 1) * SEQ_PAGE;
-  if (seqLength < need){
-    seqLength = need;
-    const ls = document.getElementById('seqLen');
-    if (ls) ls.value = seqLength;
-    if (seqPlaying){
-      seqEngineStop();
-      seqEngineStart(parseInt(document.getElementById('seqTempo').value, 10) || 110, seqLength);
-    }
-  }
+  if (target > maxPageOpened) maxPageOpened = target;
+  if (seqLength < (target + 1) * SEQ_PAGE) setSeqLength((target + 1) * SEQ_PAGE);
   paintSeq();
   paintLength();
   seqEnginePattern(seqRowsForEngine());
@@ -2836,11 +2897,14 @@ function toggleSeq(){
   if (seqPlaying){
     seqEngineStop();
     seqPlaying = false; btn.textContent = 'Play';
+    btn.classList.remove('running');
   } else {
     seqEnginePattern(seqRowsForEngine());
     seqEngineStart(bpm, seqLength);
     seqPlaying = true; btn.textContent = 'Stop';
+    btn.classList.add('running');
   }
+  updateTransport();
 }
 
 /* ==== Gamepad =========================================================== */
