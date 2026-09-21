@@ -2835,9 +2835,17 @@ function parseMidiFile(buf){
 
   // Every event from every track, on one timeline measured in ticks.
   const all = [];
-  for (let t = 0; t < ntrks && r.left() > 8; t++){
-    if (r.str(4) !== 'MTrk'){ break; }
+  let seenTempo = false;
+  // ntrks counts MTrk chunks only, so an unknown chunk must not use up an
+  // iteration. Skipping one rather than stopping matters because abandoning
+  // the rest of the file loses any tempo in a later track, and the 120bpm
+  // default then plays the piece at the wrong speed with nothing else wrong.
+  let parsed = 0;
+  while (parsed < ntrks && r.left() > 8){
+    const kind = r.str(4);
     const len = r.u32();
+    if (kind !== 'MTrk'){ r.skip(len); continue; }
+    parsed++;
     const end = r.pos() + len;
     let tick = 0, running = 0;
     while (r.pos() < end){
@@ -2845,12 +2853,14 @@ function parseMidiFile(buf){
       let st = r.u8();
       if (st < 0x80){ r.seek(r.pos() - 1); st = running; }   // running status
       else if (st < 0xF0) running = st;
+      else running = 0;      // a system or meta event cancels running status
 
       if (st === 0xFF){                       // meta
         const type = r.u8(), n = r.vlq();
         if (type === 0x51 && n === 3){
           const a = r.u8(), b = r.u8(), c = r.u8();
           all.push({ tick, meta: 'tempo', usPerBeat: (a << 16) | (b << 8) | c });
+          seenTempo = true;
         } else r.skip(n);
       } else if (st === 0xF0 || st === 0xF7){
         r.skip(r.vlq());                      // sysex, nothing here wants it
@@ -2887,7 +2897,8 @@ function parseMidiFile(buf){
   let live = 0, peak = 0;
   for (const e of out){ live += e.on ? 1 : -1; if (live > peak) peak = live; }
 
-  return { events: out, duration: seconds, tracks: ntrks, format, peak };
+  return { events: out, duration: seconds, tracks: ntrks, format, peak,
+           bpm: Math.round(60000000 / usPerBeat), seenTempo };
 }
 
 /* ---- playback ---- */
@@ -2990,8 +3001,15 @@ function buildMidiFile(){
         const warn = midiFile.peak > 9
           ? '  \u2014 wants ' + midiFile.peak + ' notes at once, only 9 voices: some will be stolen'
           : '';
+        // The tempo is worth showing: a file with no tempo event plays at the
+        // 120bpm default, which is the usual reason a piece runs at the wrong
+        // speed with nothing obviously broken.
+        const tempo = midiFile.seenTempo
+          ? midiFile.bpm + ' BPM'
+          : '120 BPM (none in file)';
         midiStatus(f.name + ': ' + midiFile.events.length + ' notes, ' +
-                   midiFile.duration.toFixed(1) + 's, ' + midiFile.tracks + ' track(s)' + warn);
+                   midiFile.duration.toFixed(1) + 's, ' + midiFile.tracks +
+                   ' track(s), ' + tempo + warn);
         log(midiFile.peak > 9 ? 'err' : 'sys',
             'Loaded ' + f.name + ' (format ' + midiFile.format + ', peak polyphony ' +
             midiFile.peak + ')');
