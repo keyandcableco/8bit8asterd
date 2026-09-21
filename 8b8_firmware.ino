@@ -1673,9 +1673,17 @@ static void warpTick() {
     case 9: {   // Env Crush -- the same quantising applied to the envelope
                 // period, so decays and buzz tones stair-step rather than
                 // the pitch. Different flavour, same gesture.
-      uint8_t peakBits = 1 + warpScale(depth, 6);
-      uint8_t bits = (uint8_t)(((uint16_t)(warpRamp & 0xFF) * peakBits) / 255u);
-      if (bits > 7) bits = 7;
+      // Envelope periods run into the thousands, where the tone crush's
+      // range of a few bits changes them by under two per cent -- which is
+      // why this did nothing at all. It needs to reach twelve bits before
+      // the period snaps somewhere audibly different. The sweep also starts
+      // from half depth rather than zero, so the effect is always doing
+      // something instead of passing through untouched for half its cycle.
+      uint8_t peakBits  = 5 + warpScale(depth, 7);        // 5..12
+      uint8_t floorBits = (uint8_t)(peakBits / 2);
+      uint8_t bits = (uint8_t)(floorBits +
+        (((uint16_t)(warpRamp & 0xFF) * (uint16_t)(peakBits - floorBits)) / 255u));
+      if (bits > 12) bits = 12;
       uint16_t emask = (uint16_t)(~((1u << bits) - 1u));
       for (uint8_t c = 0; c < 3; c++) {
         uint16_t e = (uint16_t)psg.regs[c][PSGRegs::ENVLOW] |
