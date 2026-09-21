@@ -1464,6 +1464,10 @@ __TRANSPORT_UI__
           <span class="cc-label">Loop</span>
         </div>
         <div class="cc">
+          <div class="switch" id="midiSyncSw"><div class="led"></div></div>
+          <span class="cc-label">Sync tempo</span>
+        </div>
+        <div class="cc">
           <button class="btn" id="midiPlayBtn">Play File</button>
           <span class="cc-label">Playback</span>
         </div>
@@ -2909,7 +2913,25 @@ function parseMidiFile(buf){
 // the error small and always on the late side, which is the forgiving one.
 let midiFile = null, midiPlaying = false, midiTimer = null;
 let midiNext = 0, midiHeldNotes = [];
-let midiSpeed = 1.0, midiLoop = false;
+let midiSpeed = 1.0, midiLoop = false, midiSync = false;
+
+// Points the sequencer at the file's tempo, scaled by the playback speed, so
+// a pattern played alongside a file stays with it. The tempo control is
+// capped at 50 to 200, and a file outside that is clamped rather than
+// refused: half or double a very fast or slow piece still lines up on the
+// beat, which a mismatched tempo does not.
+function midiApplyTempo(){
+  if (!midiSync || !midiFile) return;
+  const t = document.getElementById('seqTempo');
+  if (!t) return;
+  const want = Math.round(midiFile.bpm * midiSpeed);
+  const bpm = Math.max(50, Math.min(200, want));
+  t.value = bpm;
+  document.getElementById('seqBpm').textContent = bpm + ' BPM'
+    + (bpm !== want ? ' (file ' + want + ')' : '');
+  seqEngineTempo(bpm);
+  updateTransport();
+}
 // The play position is accumulated rather than derived from a start time, so
 // the speed can change mid-file without the position jumping, and a loop can
 // reset it without disturbing anything else.
@@ -3030,6 +3052,7 @@ function buildMidiFile(){
         log(midiFile.peak > 9 ? 'err' : 'sys',
             'Loaded ' + f.name + ' (format ' + midiFile.format + ', peak polyphony ' +
             midiFile.peak + ')');
+        midiApplyTempo();
       } catch (err){
         midiFile = null;
         midiStatus('Could not read that file: ' + err.message);
@@ -3056,6 +3079,7 @@ function buildMidiFile(){
       midiStatus('invention.mid (included): ' + midiFile.events.length + ' notes, ' +
                  midiFile.duration.toFixed(1) + 's, ' + midiFile.bpm + ' BPM. ' +
                  'Press Play File, or choose your own.');
+      midiApplyTempo();
     } catch (err){
       midiFile = null;
     }
@@ -3067,6 +3091,7 @@ function buildMidiFile(){
     midiSpeed = (parseInt(spd.value, 10) || 100) / 100;
     spdVal.textContent = 'Speed ' + midiSpeed.toFixed(2) + 'x';
     midiEngineSpeed(midiSpeed);
+    midiApplyTempo();
   };
 
   const loopSw = document.getElementById('midiLoopSw');
@@ -3074,6 +3099,13 @@ function buildMidiFile(){
     midiLoop = !midiLoop;
     loopSw.classList.toggle('active', midiLoop);
     midiEngineLoop(midiLoop);
+  };
+
+  const syncSw = document.getElementById('midiSyncSw');
+  if (syncSw) syncSw.onclick = () => {
+    midiSync = !midiSync;
+    syncSw.classList.toggle('active', midiSync);
+    midiApplyTempo();
   };
 }
 
