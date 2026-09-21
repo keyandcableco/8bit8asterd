@@ -830,44 +830,67 @@
     <p class="section-blurb">Sixteen steps of drums. Tap the row name to audition a sound. Everything the Drums and Drum FX sections do applies while it runs, so this is the quickest way to hear what Roll, Chaos or a Warp mode actually do to a pattern.</p>
     <div class="module">
       <h2>Drum Sequencer</h2>
-      <div class="bar" style="margin:0 13px 10px;">
-        <button class="btn" id="seqClear">Clear</button>
-        <span class="label">Pattern</span>
-        <select id="seqPreset"></select>
-        <span class="label">Page</span>
-        <select id="seqPageSel">
-          <option value="0">1&ndash;16</option>
-          <option value="1">17&ndash;32</option>
-          <option value="2">33&ndash;48</option>
-          <option value="3">49&ndash;64</option>
-        </select>
-        <span class="label">Length</span>
-        <select id="seqLen"></select>
-        <span class="label">Swing</span>
-        <input type="range" id="seqSwing" min="0" max="66" value="0"
-               style="flex:1 1 90px;max-width:130px">
-        <span class="value" id="seqSwingVal">0%</span>
-        <span class="label">Sig</span>
-        <select id="seqSig">
-          <option value="4">4/4</option>
-          <option value="3">3/4</option>
-          <option value="6">6/8</option>
-          <option value="5">5/4</option>
-          <option value="7">7/8</option>
-        </select>
-        <button class="btn" id="seqTap">Tap</button>
-        <span class="label">Copy to</span>
-        <select id="seqCopyTo">
-          <option value="0">1&ndash;16</option>
-          <option value="1">17&ndash;32</option>
-          <option value="2">33&ndash;48</option>
-          <option value="3">49&ndash;64</option>
-        </select>
-        <button class="btn" id="seqCopyBtn">Copy</button>
-        <span class="label">Tempo</span>
-        <input type="range" id="seqTempo" min="50" max="200" value="110" style="flex:1 1 120px;max-width:200px">
-        <span class="value" id="seqBpm">110 BPM</span>
+      <div class="cc-row">
+        <div class="cc">
+          <select id="seqPreset"></select>
+          <span class="cc-label">Pattern</span>
+        </div>
+        <div class="cc">
+          <select id="seqPageSel">
+            <option value="0">1&ndash;16</option>
+            <option value="1">17&ndash;32</option>
+            <option value="2">33&ndash;48</option>
+            <option value="3">49&ndash;64</option>
+          </select>
+          <span class="cc-label">Page</span>
+        </div>
+        <div class="cc">
+          <select id="seqLen"></select>
+          <span class="cc-label">Length</span>
+        </div>
+        <div class="cc">
+          <select id="seqSig">
+            <option value="4">4/4</option>
+            <option value="3">3/4</option>
+            <option value="6">6/8</option>
+            <option value="5">5/4</option>
+            <option value="7">7/8</option>
+          </select>
+          <span class="cc-label">Signature</span>
+        </div>
+        <div class="cc">
+          <input type="range" id="seqTempo" min="50" max="200" value="110"
+                 style="width:150px">
+          <span class="cc-label" id="seqBpm">110 BPM</span>
+        </div>
+        <div class="cc">
+          <input type="range" id="seqSwing" min="0" max="66" value="0"
+                 style="width:110px">
+          <span class="cc-label" id="seqSwingVal">Swing 0%</span>
+        </div>
+        <div class="cc">
+          <button class="btn" id="seqTap">Tap</button>
+          <span class="cc-label">Tempo</span>
+        </div>
+        <div class="cc">
+          <button class="btn" id="seqClear">Clear</button>
+          <span class="cc-label">This page</span>
+        </div>
+        <div class="cc">
+          <select id="seqCopyTo">
+            <option value="0">1&ndash;16</option>
+            <option value="1">17&ndash;32</option>
+            <option value="2">33&ndash;48</option>
+            <option value="3">49&ndash;64</option>
+          </select>
+          <span class="cc-label">Copy to</span>
+        </div>
+        <div class="cc">
+          <button class="btn" id="seqCopyBtn">Copy</button>
+          <span class="cc-label">Page</span>
+        </div>
       </div>
+
       <div class="seq">
         <div class="seqhead" id="seqHead"></div>
         <div id="seqRows"></div>
@@ -876,18 +899,24 @@
 
     <div class="module">
       <h2>MIDI File</h2>
-      <div class="bar filepick" style="margin:0 13px 10px;">
+      <div class="bar filepick cc-row" style="margin:0 13px 10px;align-items:flex-end;">
         <input type="file" id="midiFileInput" accept=".mid,.midi,audio/midi">
         <label for="midiFileInput">Choose .mid</label>
         <span class="fname" id="midiFileName">no file</span>
         <span class="spacer"></span>
-        <span class="label">Speed</span>
-        <input type="range" id="midiSpeed" min="25" max="200" value="100"
-               style="flex:1 1 120px;max-width:180px">
-        <span class="value" id="midiSpeedVal">1.00x</span>
-        <span class="label">Loop</span>
-        <div class="switch" id="midiLoopSw"><div class="led"></div></div>
-        <button class="btn" id="midiPlayBtn">Play File</button>
+        <div class="cc">
+          <input type="range" id="midiSpeed" min="25" max="200" value="100"
+                 style="width:150px">
+          <span class="cc-label" id="midiSpeedVal">Speed 1.00x</span>
+        </div>
+        <div class="cc">
+          <div class="switch" id="midiLoopSw"><div class="led"></div></div>
+          <span class="cc-label">Loop</span>
+        </div>
+        <div class="cc">
+          <button class="btn" id="midiPlayBtn">Play File</button>
+          <span class="cc-label">Playback</span>
+        </div>
       </div>
       <p class="section-blurb" id="midiFileInfo">No file loaded. Channel 10 plays the drum kit; every other channel goes to the tone voices, so every setting on this panel shapes the playback &mdash; temperament, envelope, unison, the Warp Zone, all of it.</p>
     </div>
@@ -2647,7 +2676,7 @@ function buildMidiFile(){
   const spdVal = document.getElementById('midiSpeedVal');
   if (spd) spd.oninput = () => {
     midiSpeed = (parseInt(spd.value, 10) || 100) / 100;
-    spdVal.textContent = midiSpeed.toFixed(2) + 'x';
+    spdVal.textContent = 'Speed ' + midiSpeed.toFixed(2) + 'x';
   };
 
   const loopSw = document.getElementById('midiLoopSw');
@@ -2697,26 +2726,28 @@ const SEQ_PATTERNS = {
   'Tom Roll': { LoTom:[0,2,4,6], HiTom:[8,10,12,14], Crash:[0] },
   // Son clave spans two bars, so these run to step 31 and set the length to
   // 32 on load. 3:2 puts the three-side first.
+  // The son clave in cut time: the same figure as the two-bar version, at
+  // half the note values, so it fits a page.
   'Clave 3:2': {
     assign: { Rim: 39, OpnHat: 56 },
-    Rim:   [0, 6, 12, 20, 24],
-    Kick:  [0, 16],
-    OpnHat:[8, 24]
+    Rim:   [0, 3, 6, 10, 12],
+    Kick:  [0, 8],
+    OpnHat:[4, 12]
   },
   'Clave 2:3': {
     assign: { Rim: 39, OpnHat: 56 },
-    Rim:   [4, 8, 16, 22, 28],
-    Kick:  [0, 16],
-    OpnHat:[8, 24]
+    Rim:   [2, 4, 8, 11, 14],
+    Kick:  [0, 8],
+    OpnHat:[4, 12]
   },
   // Jazz ride: quarter, quarter plus the swung upbeat, repeating. Needs the
   // Swing control up around 33% to sit as a triplet; flat it reads as
   // sixteenths. Hat on two and four is the foot.
   'Jazz Ride': {
     assign: { Crash: 51, OpnHat: 44 },
-    Crash: [0, 4, 7, 8, 12, 15, 16, 20, 23, 24, 28, 31],
-    OpnHat:[4, 12, 20, 28],
-    Kick:  [0, 22]
+    Crash: [0, 4, 7, 8, 12, 15],
+    OpnHat:[4, 12],
+    Kick:  [0]
   }
 };
 
@@ -2963,7 +2994,7 @@ function buildSequencer(){
   const swingVal = document.getElementById('seqSwingVal');
   if (swing) swing.oninput = () => {
     const pct = parseInt(swing.value, 10) || 0;
-    swingVal.textContent = pct + '%';
+    swingVal.textContent = 'Swing ' + pct + '%';
     seqEngineSwing(pct / 100);
   };
 
@@ -2996,7 +3027,7 @@ function buildSequencer(){
     t.value = bpm;
     document.getElementById('seqBpm').textContent = bpm + ' BPM';
     seqEngineTempo(bpm);
-    tapBtn.textContent = 'Tap ' + bpm;
+    tapBtn.textContent = String(bpm);
   };
 
   const copySel = document.getElementById('seqCopyTo');
