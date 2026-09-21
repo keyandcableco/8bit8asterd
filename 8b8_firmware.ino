@@ -2275,11 +2275,26 @@ void loop() {
 #endif
 
   unsigned long now = millis();
-  if ((now - lastUpdate) >= 10) {
+  // Clock Warp drags the MCU's own tick along with the chip clock. Without
+  // this only half of each sound moved: tone periods, noise colour and the
+  // hardware envelope are chip-side and slow with the clock, but amplitude
+  // decay, drum length, rolls and every LFO are counted here in milliseconds
+  // and carried on regardless. A drum is mostly the MCU half, which is why
+  // the effect barely showed on the kit. Scaling the tick makes it genuine
+  // vari-speed: at the deepest sag everything runs near a third speed.
+  uint8_t tickMs = 10;
+  if (params[P_WARP_MODE] == 10) {
+    uint16_t div = OCR1AL ? OCR1AL : DIVISOR;
+    uint16_t t = (uint16_t)((10u * div + (DIVISOR / 2)) / DIVISOR);
+    if (t < 3) t = 3;
+    if (t > 40) t = 40;
+    tickMs = (uint8_t)t;
+  }
+  if ((now - lastUpdate) >= tickMs) {
     update100Hz();
-    lastUpdate += 10; // was += 5 against a >10ms check, causing the
-                       // envelope/perc update rate to drift ~2x fast
-                       // whenever the loop fell behind and had to catch up
+    lastUpdate += tickMs; // was += 5 against a >10ms check, causing the
+                          // envelope/perc update rate to drift ~2x fast
+                          // whenever the loop fell behind and had to catch up
   }
 
   // Warp Zone runs far faster than the 100Hz voice tick -- up to ~4kHz --
