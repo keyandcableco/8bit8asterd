@@ -2590,7 +2590,12 @@ function parseMidiFile(buf){
   for (const e of out){ live += e.on ? 1 : -1; if (live > peak) peak = live; }
 
   return { events: out, duration: seconds, tracks: ntrks, format, peak,
-           bpm: Math.round(60000000 / usPerBeat), seenTempo };
+           bpm: Math.round(60000000 / usPerBeat),
+           // Unrounded, for the sequencer. A file at 103.4bpm synced to an
+           // integer 103 drifts 0.4 per cent, which is a tenth of a second
+           // every thirty and audible against a pattern.
+           bpmExact: 60000000 / usPerBeat,
+           seenTempo };
 }
 
 /* ---- playback ---- */
@@ -2614,10 +2619,11 @@ function midiApplyTempo(){
   if (!t) return;
   const want = Math.round(midiFile.bpm * midiSpeed);
   const bpm = Math.max(50, Math.min(200, want));
+  const exact = Math.max(50, Math.min(200, midiFile.bpmExact * midiSpeed));
   t.value = bpm;
   document.getElementById('seqBpm').textContent = bpm + ' BPM'
     + (bpm !== want ? ' (file ' + want + ')' : '');
-  seqEngineTempo(bpm);
+  seqEngineTempo(exact);
   updateTransport();
 }
 // The play position is accumulated rather than derived from a start time, so
@@ -2636,6 +2642,7 @@ function midiAllOff(){
 }
 
 function midiStop(){
+  if (midiSync && seqPlaying) toggleSeq();
   if (midiInEngine) midiEngineStop();
   midiInEngine = false;
   midiPlaying = false;
@@ -2659,6 +2666,11 @@ function midiPlay(){
   midiLastReal = performance.now();
   midiInEngine = midiEngineLoad(midiFile.events);
   if (midiInEngine) midiEngineStart(midiSpeed, midiLoop);
+
+  // With Sync on the two run as one transport. Started in the same turn they
+  // begin on the same render, so the pattern and the file share a downbeat
+  // rather than being however far apart the two presses were.
+  if (midiSync && !seqPlaying) toggleSeq();
   const b = document.getElementById('midiPlayBtn');
   if (b) b.textContent = 'Stop File';
 
