@@ -830,10 +830,16 @@ public:
       }
 
       case 'X':
-        // FX is playing.         
-        if (m_fxp.freqdecay > 0) { 
-          m_fxp.tonefreq += m_fxp.freqdecay;
-          //psg.setEnvelope(m_fxp.envdecay, 9); 
+        // FX is playing.
+        if (m_fxp.freqdecay > 0) {
+          if (m_fxp.tonefreq > 0) {
+            m_fxp.tonefreq += m_fxp.freqdecay;       // pitch falls
+          } else if (m_fxp.noisefreq < 16) {
+            // A noise drum darkens instead, which is the same gesture: the
+            // noise period is a divisor, so raising it lowers the hiss.
+            uint16_t n = m_fxp.noisefreq + m_fxp.freqdecay;
+            m_fxp.noisefreq = (uint8_t)(n > 15 ? 15 : n);
+          }
           psg.setToneAndNoise(m_chan, m_fxp.tonefreq, m_fxp.noisefreq, 30);
         }
         
@@ -1083,12 +1089,25 @@ static void applyDrumMods(FXParams &f) {
   int8_t  nz   = (int8_t)params[P_DRUM_NOISE] - 7; // -7..+7
 
   // Pitch. tonefreq is a DIVISOR, so a higher tune % must make it smaller.
-  // tonefreq 0 means "no tone" and has to stay 0.
-  if (f.tonefreq > 0 && tune != 100) {
-    uint32_t d = ((uint32_t)f.tonefreq * 100UL) / tune;
-    if (d < 1) d = 1;
-    if (d > 4095) d = 4095;
-    f.tonefreq = (ushort)d;
+  if (tune != 100) {
+    if (f.tonefreq > 0) {
+      uint32_t d = ((uint32_t)f.tonefreq * 100UL) / tune;
+      if (d < 1) d = 1;
+      if (d > 4095) d = 4095;
+      f.tonefreq = (ushort)d;
+    } else if (f.noisefreq < 16) {
+      // Half the kit -- snare, every hat and cymbal, tambourine, side stick
+      // -- has no tone at all, so Tune did nothing to any of them. For those
+      // the noise period is the pitch. It is shifted rather than scaled:
+      // the range is sixteen integers and the hats already sit at 0, where
+      // a ratio can only move them one step and the chip cannot tell 0 from
+      // 1 anyway. A shift gives the whole range in both directions.
+      int shift = ((int)100 - (int)tune) * 7 / 100;    // +7 dark .. -7 bright
+      int n = (int)f.noisefreq + shift;
+      if (n < 0) n = 0;
+      if (n > 15) n = 15;
+      f.noisefreq = (uint8_t)n;
+    }
   }
 
   // Length. The envelope period stretches, and the amplitude decay rate
@@ -1102,9 +1121,18 @@ static void applyDrumMods(FXParams &f) {
     f.timer = (ushort)t;
   }
 
-  // Pitch-drop amount on kicks and toms.
+  // Pitch drop. On a tone drum this is added to the divisor each tick. On a
+  // noise drum there is no divisor to add to, so Bend could not touch a
+  // snare or a hat; freqdecay there means "darken the noise as it decays",
+  // handled in the percussion tick.
   if (bend != 100) {
     f.freqdecay = (ushort)(((uint32_t)f.freqdecay * bend) / 100UL);
+  }
+  if (f.tonefreq == 0 && f.noisefreq < 16 && bend > 100) {
+    // Nothing to scale, so give it a sweep proportional to how far past
+    // 100% the control has been pushed.
+    uint16_t sweep = (uint16_t)((bend - 100) / 25);       // 0..4
+    if (sweep > 0) f.freqdecay = sweep;
   }
 
   // Noise colour. Entries at 16 or above mean "no noise" to
