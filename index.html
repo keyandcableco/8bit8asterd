@@ -722,6 +722,13 @@
           <span class="cc-label">Barry</span>
         </div>
         <div class="cc">
+          <select id="chordLayoutSel">
+            <option value="0">Standard</option>
+            <option value="1">Alternate</option>
+          </select>
+          <span class="cc-label">Layout</span>
+        </div>
+        <div class="cc">
           <div class="switch" id="stackSw"><div class="led"></div></div>
           <span class="cc-label">Stack</span>
         </div>
@@ -1443,6 +1450,28 @@ const CHORD_SCALE = {
   '12':  'dorian',     '1':   'aeolian',  '01':  'octatonic',
   '012': 'wholeTone'
 };
+// The alternate layout: a second reading of the same three buttons, from the
+// minichord's assignable chord layout (upstream PR #130). Three buttons give
+// seven combinations and the standard set already uses all of them, so sus
+// and extended chords need a second reading rather than new buttons. These
+// are that feature's defaults. The ninth chords drop their fifth -- four
+// voices, and that is how a player would voice them anyway.
+const ALT_CHORDS = {
+  '0':   { tones: [0,5,7],     suffix: 'sus4'  },
+  '1':   { tones: [0,2,7],     suffix: 'sus2'  },
+  '2':   { tones: [0,5,7,10],  suffix: '7sus4' },
+  '02':  { tones: [0,4,11,14], suffix: 'maj9'  },
+  '12':  { tones: [0,3,10,14], suffix: 'm9'    },
+  '01':  { tones: [0,4,7,14],  suffix: 'add9'  },
+  '012': { tones: [0,4,9,14],  suffix: '6/9'   }
+};
+const ALT_ROW_SUFFIX = ['sus4', 'sus2', '7sus4'];
+const CHORD_SCALE_ALT = {
+  '0': 'mixolydian', '1': 'ionian',  '2': 'mixolydian',
+  '02': 'ionian',    '12': 'dorian', '01': 'ionian', '012': 'ionian'
+};
+let altLayout = false;
+
 const CHORD_SCALE_BARRY = { '0': 'majSixthDim', '1': 'minSixthDim', '01': 'octatonic' };
 // Mode 9: the same idea with pentatonics, which removes the semitones.
 const CHORD_PENT = {
@@ -1492,11 +1521,11 @@ function harpScaleFor(){
 
   if (m.kind === 'chord'){
     // Fall back to the last chord so the harp keeps its strings once the
-    // button is released.
+    // button is released. No padding: this mode means the chord's own notes,
+    // and a triad padded with a sixth put an E in a G major harp.
     const sp = spec || specForKey(lastHarpKey);
     if (!sp) return null;
-    return { tones: sp.tones.length === 3 ? sp.tones.concat([9]) : sp.tones,
-             root: chordRoot };
+    return { tones: sp.tones, root: chordRoot };
   }
   if (m.kind === 'key'){
     return { tones: SCALES[m.scale], root: (harpKey + (m.offset || 0)) % 12 };
@@ -1504,7 +1533,8 @@ function harpScaleFor(){
   if (m.kind === 'perChord' || m.kind === 'perChordPent'){
     const key = harpKeyFor();
     if (!key) return null;
-    const table = m.kind === 'perChordPent' ? CHORD_PENT
+    const table = altLayout ? CHORD_SCALE_ALT
+                : m.kind === 'perChordPent' ? CHORD_PENT
                 : (barryOn && CHORD_SCALE_BARRY[key] ? CHORD_SCALE_BARRY : CHORD_SCALE);
     const name = table[key] || CHORD_SCALE[key] || 'ionian';
     return { tones: SCALES[name], root: chordRoot };
@@ -1571,6 +1601,12 @@ function currentKey(){
 }
 
 function specForKey(key){
+  // Barry Harris rewrites the standard triads; in the alternate layout those
+  // combinations are different chords entirely, so it does not apply there.
+  if (altLayout){
+    const a = ALT_CHORDS[key];
+    return a ? { tones: a.tones, suffix: a.suffix } : null;
+  }
   const c = CHORDS[key];
   if (!c) return null;
   const useBarry = barryOn && c.barry;
@@ -1578,16 +1614,7 @@ function specForKey(key){
            suffix: useBarry ? c.bSuffix : c.suffix };
 }
 
-function chordSpec(){
-  const key = currentKey();
-  const c = CHORDS[key];
-  if (!c) return null;
-  const useBarry = barryOn && c.barry;
-  return {
-    tones:  useBarry ? c.barry   : c.tones,
-    suffix: useBarry ? c.bSuffix : c.suffix
-  };
-}
+function chordSpec(){ return specForKey(currentKey()); }
 
 // Inversion decides which chord tone sits at the bottom; spacing decides how
 // far apart the voices sit. Drop voicings take the close position and drop
@@ -1634,7 +1661,12 @@ function ladderFor(){
   const sc = harpScaleFor();
   if (!sc) return [];
   const n = strumCount();
-  const tones = sc.tones;
+  // Fold the tones into one octave and sort them. A chord can reach past an
+  // octave -- the alternate layout's ninths hold a 14 -- and stacking those
+  // by the octave would put the ninth above the next repeat's root, so the
+  // strings stopped ascending. The harp plays the chord's pitch classes
+  // across octaves, which is what a harp does anyway.
+  const tones = [...new Set(sc.tones.map(t => ((t % 12) + 12) % 12))].sort((a, b) => a - b);
 
   // Start an octave below the chord so there is room to climb, aligned to the
   // scale's own root rather than the chord's.
@@ -1698,6 +1730,17 @@ function refreshChord(){
   const el = document.getElementById('chordName');
   if (el) el.textContent = ROOTS[activeRoot][0] + (sharpOn ? '#' : '') + spec.suffix;
   paintChords();
+}
+
+// The buttons say what they will play, so switching layout relabels them
+// rather than leaving the old names on a different set of chords.
+function relabelChords(){
+  document.querySelectorAll('.chordbtn').forEach(b => {
+    const ri = b.dataset.root | 0, qi = b.dataset.q | 0;
+    b.textContent = ROOTS[ri][0] + (altLayout ? ALT_ROW_SUFFIX[qi] : QUALITY[qi].suffix);
+  });
+  const sw = document.getElementById('barrySw');
+  if (sw) sw.style.opacity = altLayout ? '0.35' : '';   // no effect here
 }
 
 function paintChords(){
@@ -2008,6 +2051,22 @@ function buildPlaySurface(){
     cnt.textContent = countDegrees() + ' notes';
   }
   refreshHarp();
+
+  const layoutSel = document.getElementById('chordLayoutSel');
+  if (layoutSel){
+    layoutSel.onchange = () => {
+      altLayout = layoutSel.value === '1';
+      relabelChords();
+      if (currentKey()) refreshChord(); else updateStrum();
+      try { localStorage.setItem('8b8.altLayout', altLayout ? '1' : '0'); } catch(e){}
+    };
+    try {
+      if (localStorage.getItem('8b8.altLayout') === '1'){
+        layoutSel.value = '1'; altLayout = true;
+      }
+    } catch(e){}
+  }
+  relabelChords();
 
   const stackSw = document.getElementById('stackSw');
   if (stackSw) stackSw.onclick = () => {
