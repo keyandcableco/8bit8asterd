@@ -1851,6 +1851,58 @@ function relabelChords(){
   if (sw) sw.style.opacity = altLayout ? '0.35' : '';   // no effect here
 }
 
+// What Rate, Depth and Motion actually do, per mode. Three controls cover
+// eleven effects, so without this the panel names them for none of them.
+const WARP_LABELS = [
+  ['Rate', 'Depth', 'Motion'],                  // Off
+  ['Retrigger', 'Interval', 'Drift'],           // Sync Buzz
+  ['Chop rate', 'Gap', 'Drift'],                // Stutter
+  ['Jump rate', 'Spread', 'Drift'],             // Scramble
+  ['Zap rate', 'Sweep', 'Drift'],               // Zap
+  ['Fall time', 'Distance', 'Drift'],           // Tape Stop
+  ['Siren speed', 'Range', 'Drift'],            // Siren
+  ['Crush rate', 'Bits', 'Drift'],              // Crush
+  ['Ring freq', 'Amount', 'Drift'],             // Ring
+  ['Crush rate', 'Bits', 'Drift'],              // Env Crush
+  ['Sweep speed', 'Clock drop', 'Hold']         // Clock Warp
+];
+
+// Parameter controls carry no id, so the three are found once by their
+// starting labels inside the Warp Zone module and kept. The label is a text
+// node followed by the CC tag, so only the text node is rewritten: replacing
+// the whole label would drop the CC binding readout with it.
+let warpNameEls = null;
+let warpModeRow = null;
+
+function findWarpControls(){
+  const mods = [...document.querySelectorAll('.module')];
+  const warp = mods.find(m => {
+    const h = m.querySelector('h2');
+    return h && h.textContent.trim() === 'Warp Zone';
+  });
+  if (!warp) return;
+  const want = { Rate: 0, Depth: 1, Motion: 2 };
+  warpNameEls = [null, null, null];
+  warp.querySelectorAll('.ctl .name').forEach(n => {
+    const txt = (n.childNodes[0] && n.childNodes[0].nodeValue || '').trim();
+    if (txt in want) warpNameEls[want[txt]] = n;
+    // An enum renders as a row of buttons, not a select, so the mode is read
+    // from which button is active rather than from a value.
+    if (txt === 'Mode') warpModeRow = n.closest('.ctl').querySelector('.enum-row');
+  });
+}
+
+function paintWarpLabels(){
+  if (!warpNameEls) findWarpControls();
+  if (!warpNameEls || !warpModeRow) return;
+  const btns = [...warpModeRow.querySelectorAll('.enum-btn')];
+  const mode = Math.max(0, btns.findIndex(b => b.classList.contains('active')));
+  const names = WARP_LABELS[mode % WARP_LABELS.length];
+  warpNameEls.forEach((n, i) => {
+    if (n && n.childNodes[0]) n.childNodes[0].nodeValue = names[i];
+  });
+}
+
 function paintChords(){
   document.querySelectorAll('.chordbtn').forEach(b => {
     const key = currentKey() || '';
@@ -2208,6 +2260,11 @@ function buildPlaySurface(){
     } catch(e){}
   }
   relabelChords();
+  findWarpControls();
+  paintWarpLabels();
+  // Every mode button repaints, since the value arrives via setValue rather
+  // than a change event.
+  if (warpModeRow) warpModeRow.addEventListener('click', () => setTimeout(paintWarpLabels, 0));
 
   const stackSw = document.getElementById('stackSw');
   if (stackSw) stackSw.onclick = () => {

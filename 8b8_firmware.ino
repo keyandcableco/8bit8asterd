@@ -1947,17 +1947,17 @@ static void warpTick() {
       // 615kHz, short of that, so the effect could not reach the sound the
       // switch makes.
       const uint8_t amt = warpScale(depth, 13);
-      int16_t swing;
-      if (params[P_WARP_RATE] <= 1) {
-        // Slowest rate holds the clock down rather than sweeping through it.
-        // A halving button is a switch, not a wobble, and a sine only visits
-        // its extreme for an instant; held, the whole instrument sits slow
-        // and coarse, which is where the grit is.
-        swing = (int16_t)amt;
-      } else {
-        int8_t m = (int8_t)pgm_read_byte(&lfoSine[(warpRamp >> 2) & 31]);
-        swing = ((int16_t)m * (int16_t)amt) / 127;
-      }
+      // Motion mixes between sweeping the clock and sitting at the bottom of
+      // the sweep. At its top the clock is simply held down, which is what a
+      // halving switch does; a sine only visits its extreme for an instant,
+      // and the held sound is where the coarseness is. Turning a control up
+      // to get more of the effect is the point: the hold used to live at the
+      // bottom of Rate, where nothing suggested it.
+      const uint8_t hold = params[P_WARP_MOTION] > 63 ? 63 : params[P_WARP_MOTION];
+      int8_t m = (int8_t)pgm_read_byte(&lfoSine[(warpRamp >> 2) & 31]);
+      int16_t sweep = ((int16_t)m * (int16_t)amt) / 127;
+      int16_t swing = (int16_t)(((int32_t)amt * hold
+                               + (int32_t)sweep * (63 - hold)) / 63);
       int d = (int)DIVISOR + (int)swing;
       // The AY-3-8910 is rated to 2MHz. Stopping at 1.6MHz leaves headroom
       // for forty-year-old parts rather than running them at the limit for
