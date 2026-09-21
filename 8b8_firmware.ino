@@ -487,7 +487,14 @@ public:
   void applyBuzz(uint8_t chip, uint8_t sub, ushort toneDivisor, uint8_t ratio,
                  uint8_t shape, int8_t detune) {
     unsigned char *r = regs[chip];
-    int32_t envDivisor = (int32_t)toneDivisor * ratio + detune;
+    // The envelope's full cycle is clock/(256*EP) while the tone is
+    // clock/(16*TP), so the envelope only oscillates AT the note when
+    // EP = TP/16. Multiplying the tone divisor directly, as this used to,
+    // put it four octaves below the note -- a slow amplitude pulse rather
+    // than a waveform. Divided down, the looping shapes become what they
+    // actually are: a hardware sawtooth or triangle at the played pitch.
+    // Ratio now means octaves below that: 1 unison, 2 an octave, 4 two.
+    int32_t envDivisor = (((int32_t)toneDivisor * ratio) + 8) / 16 + detune;
     if (envDivisor < 1) envDivisor = 1;
     if (envDivisor > 65535) envDivisor = 65535;
     r[ENVLOW]  = envDivisor & 0xFF;
@@ -1133,6 +1140,58 @@ static int  freeRamNow() { return -1; }
 static int  freeRamLow() { return -1; }
 #endif
 
+// ---------------------------------------------------------------------------
+// Wavetable voice
+// ---------------------------------------------------------------------------
+// The AY makes squares and noise and nothing else. But with tone and noise
+// switched off on a channel, its amplitude register is just a 4-bit DAC
+// facing the output -- so writing a waveform into it at audio rate gives a
+// shape the chip cannot otherwise produce. This is the digidrum trick the
+// Atari ST scene used, pointed at a held note rather than a sample.
+//
+// Timer3 drives it. That timer was the digidrum timer and has been free
+// since that engine came out. writeReg() already runs under cli(), so an
+// ISR sharing the bus with the main loop is safe.
+#define WAVE_HZ 16000               // ISR rate; 1000 cycles apiece at 16MHz
+
+static volatile uint16_t wavePhase = 0;
+static volatile uint16_t waveStep  = 0;     // phase units per ISR tick
+static volatile uint8_t  waveChip  = 0xFF;  // 0xFF = not running
+static volatile uint8_t  waveReg   = 0;
+static volatile uint8_t  waveTable = 0;
+static volatile uint8_t  waveLevel = 15;
+
+// One ISR tick: advance the phase, look up the sample, push it at the chip.
+// Deliberately small -- no arithmetic beyond an add and a shift.
+static inline void waveTick() {
+  if (waveChip == 0xFF) return;
+  wavePhase += waveStep;
+  uint8_t idx = (uint8_t)(wavePhase >> 10) & (WAVE_LEN - 1);
+  uint8_t v = pgm_read_byte(&WAVE_TABLES[waveTable][idx]);
+  if (waveLevel < 15) v = (uint8_t)(((uint16_t)v * waveLevel) / 15u);
+  writeReg(waveChip, waveReg, v);
+}
+
+#ifdef __AVR__
+ISR(TIMER3_COMPA_vect) { waveTick(); }
+
+static void waveTimerInit() {
+  TCCR3A = 0;
+  TCCR3B = (1 << WGM32) | (1 << CS31);          // CTC, /8 prescale
+  OCR3A  = (uint16_t)((F_CPU / 8UL / WAVE_HZ) - 1UL);
+  TIMSK3 = 0;                                   // enabled only when in use
+}
+static inline void waveTimerRun(bool on) {
+  if (on) TIMSK3 |= (1 << OCIE3A);
+  else    TIMSK3 &= ~(1 << OCIE3A);
+}
+#else
+// The emulator calls waveTick() from its render loop at the same rate.
+extern "C" void emu_wave_tick() { waveTick(); }
+static void waveTimerInit() {}
+static inline void waveTimerRun(bool) {}
+#endif
+
 static uint16_t warpRngState = 0xACE1;
 
 // Depth is a magnitude, 1..63, and every mode should respond to it evenly.
@@ -1484,6 +1543,53 @@ static void recalcDerived() {
 // Tracks which chip/sub-channel currently has the envelope-mode bit set,
 // so it can be cleared cleanly when the buzz target moves elsewhere.
 static int8_t g_buzzChip = -1, g_buzzSub = -1;
+
+// Hands the highest held note to the wavetable, or gives it back. Runs on
+// the 100Hz tick beside the other voice housekeeping.
+static void applyWavetable() {
+  int8_t target = -1;
+  if (params[P_WAVE_ENABLE] && m_highest != NO_NOTE) {
+    uint8_t v = m_voiceNo[m_highest];
+    if (v != NO_VOICE && m_playing[v] != PERC_NOTE && voices[v].isPlaying()) target = v;
+  }
+
+  if (target < 0) {
+    if (waveChip != 0xFF) {
+      waveTimerRun(false);
+      uint8_t c = waveChip, r = waveReg;
+      waveChip = 0xFF;
+      writeReg(c, r, 0);            // leave the channel silent, not stuck
+      psg.invalidate();             // and let the cache rewrite it properly
+    }
+    return;
+  }
+
+  const uint8_t chip = (uint8_t)(target % 3), sub = (uint8_t)(target / 3);
+
+  // Tone and noise off: the amplitude register is then the only thing
+  // reaching the output on this channel.
+  uint8_t m = psg.regs[chip][PSGRegs::MIXER];
+  m |= (uint8_t)((1u << sub) | (8u << sub));
+  writeReg(chip, PSGRegs::MIXER, m);
+
+  // Phase step: at WAVE_HZ, a table of WAVE_LEN entries with a 10-bit
+  // fractional phase steps by (freq * 65536 / WAVE_HZ). The note's frequency
+  // is clock/(16*TP), so that folds to a single divide.
+  uint16_t tp = voices[target].m_pitch;
+  if (tp < 1) tp = 1;
+  // Rounded, not truncated: at the bottom of the range one phase unit is
+  // worth nearly forty cents, and truncating always lost it.
+  uint32_t step = (256000UL + (tp / 2)) / tp;
+  if (step < 1) step = 1;
+  if (step > 65535UL) step = 65535UL;
+
+  waveTable = (uint8_t)(params[P_WAVE_SHAPE] % WAVE_COUNT);
+  waveLevel = params[P_WAVE_LEVEL];
+  waveReg   = (uint8_t)(PSGRegs::TONEAAMPL + sub);
+  waveStep  = (uint16_t)step;
+  waveChip  = chip;
+  waveTimerRun(true);
+}
 
 static void applyBuzzyBass() {
   int8_t targetVoice = -1;
@@ -2167,6 +2273,7 @@ static void update100Hz() {
   }
 
   applyBuzzyBass();
+  applyWavetable();
 }
 
 // Main code ----------------------------------------------
@@ -2178,6 +2285,7 @@ void setup() {
   // Paint the free RAM before anything has had a chance to use much stack,
   // so the high-water reading covers the whole run.
   paintFreeRam();
+  waveTimerInit();
 
   // Hold in reset while we set up the reset
   pinMode(nRESET, OUTPUT);

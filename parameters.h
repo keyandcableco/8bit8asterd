@@ -5,8 +5,8 @@
 
 #include <avr/pgmspace.h>
 
-#define NUM_PARAMS 44
-#define PARAM_LAYOUT_VERSION 0x45
+#define NUM_PARAMS 47
+#define PARAM_LAYOUT_VERSION 0xEC
 
 enum {
   P_BUZZ_ENABLE = 0,  // Buzzy Bass: Enable [0..1] default 0
@@ -17,47 +17,50 @@ enum {
   P_WARP_RATE = 5,  // Warp Zone: Rate [1..120] default 30
   P_WARP_DEPTH = 6,  // Warp Zone: Depth [1..63] default 20
   P_WARP_MOTION = 7,  // Warp Zone: Motion [0..64] default 0
-  P_UNI_ENABLE = 8,  // Unison: Enable [0..1] default 0
-  P_UNI_DETUNE = 9,  // Unison: Detune [1..32] default 8
-  P_VIB_ENABLE = 10,  // Vibrato: Enable [0..1] default 0
-  P_VIB_RATE = 11,  // Vibrato: Rate [1..200] default 50
-  P_VIB_DEPTH = 12,  // Vibrato: Depth [0..31] default 6
-  P_VIB_DELAY = 13,  // Vibrato: Delay [0..200] default 0
-  P_TREM_ENABLE = 14,  // Tremolo: Enable [0..1] default 0
-  P_TREM_RATE = 15,  // Tremolo: Rate [1..200] default 40
-  P_TREM_DEPTH = 16,  // Tremolo: Depth [0..15] default 5
-  P_NOISE_ENABLE = 17,  // Noise Blend: Enable [0..1] default 0
-  P_NOISE_PERIOD = 18,  // Noise Blend: Period [0..15] default 8
-  P_DRUM_TUNE = 19,  // Drums: Tune [50..200] default 100
-  P_DRUM_DECAY = 20,  // Drums: Decay [50..200] default 100
-  P_DRUM_BEND = 21,  // Drums: Bend [0..200] default 100
-  P_DRUM_NOISE = 22,  // Drums: Noise [0..14] default 7
-  P_DRUM_ROLL = 23,  // Drum FX: Roll [0..50] default 0
-  P_DRUM_FLAM = 24,  // Drum FX: Flam [0..30] default 0
-  P_DRUM_REVERSE = 25,  // Drum FX: Reverse [0..1] default 0
-  P_DRUM_CHAOS = 26,  // Drum FX: Chaos [0..63] default 0
-  P_ARP_MODE = 27,  // Auto FX: Arp [0..6] default 0
-  P_ARP_RATE = 28,  // Auto FX: Arp Rate [1..50] default 17
-  P_SWEEP_AMOUNT = 29,  // Auto FX: Sweep [0..64] default 32
-  P_RETRIG_RATE = 30,  // Auto FX: Retrigger [0..50] default 0
-  P_ENV_MODE = 31,  // Envelope: Mode [0..1] default 0
-  P_ENV_ATTACK = 32,  // Envelope: Attack [1..32] default 1
-  P_ENV_DECAY = 33,  // Envelope: Decay [1..32] default 26
-  P_ENV_SUSTAIN = 34,  // Envelope: Sustain [0..32] default 32
-  P_ENV_RELEASE = 35,  // Envelope: Release [1..32] default 19
-  P_GLIDE = 36,  // Pitch & Response: Glide [0..100] default 0
-  P_TRANSPOSE = 37,  // Pitch & Response: Transpose [0..48] default 24
-  P_MIX_NOISE = 38,  // Mixer: Noise [0..15] default 15
-  P_MIX_TONE = 39,  // Mixer: Tone [0..15] default 15
-  P_MIX_DRUM = 40,  // Mixer: Drums [0..15] default 15
-  P_TEMPERAMENT = 41,  // Tuning: Temperament [0..9] default 0
-  P_TEMPER_ROOT = 42,  // Tuning: Root [0..11] default 0
-  P_VEL_SENSE = 43,  // Pitch & Response: Velocity [0..1] default 1
+  P_WAVE_ENABLE = 8,  // Wavetable: Enable [0..1] default 0
+  P_WAVE_SHAPE = 9,  // Wavetable: Shape [0..5] default 0
+  P_WAVE_LEVEL = 10,  // Wavetable: Level [1..15] default 12
+  P_UNI_ENABLE = 11,  // Unison: Enable [0..1] default 0
+  P_UNI_DETUNE = 12,  // Unison: Detune [1..32] default 8
+  P_VIB_ENABLE = 13,  // Vibrato: Enable [0..1] default 0
+  P_VIB_RATE = 14,  // Vibrato: Rate [1..200] default 50
+  P_VIB_DEPTH = 15,  // Vibrato: Depth [0..31] default 6
+  P_VIB_DELAY = 16,  // Vibrato: Delay [0..200] default 0
+  P_TREM_ENABLE = 17,  // Tremolo: Enable [0..1] default 0
+  P_TREM_RATE = 18,  // Tremolo: Rate [1..200] default 40
+  P_TREM_DEPTH = 19,  // Tremolo: Depth [0..15] default 5
+  P_NOISE_ENABLE = 20,  // Noise Blend: Enable [0..1] default 0
+  P_NOISE_PERIOD = 21,  // Noise Blend: Period [0..15] default 8
+  P_DRUM_TUNE = 22,  // Drums: Tune [50..200] default 100
+  P_DRUM_DECAY = 23,  // Drums: Decay [50..200] default 100
+  P_DRUM_BEND = 24,  // Drums: Bend [0..200] default 100
+  P_DRUM_NOISE = 25,  // Drums: Noise [0..14] default 7
+  P_DRUM_ROLL = 26,  // Drum FX: Roll [0..50] default 0
+  P_DRUM_FLAM = 27,  // Drum FX: Flam [0..30] default 0
+  P_DRUM_REVERSE = 28,  // Drum FX: Reverse [0..1] default 0
+  P_DRUM_CHAOS = 29,  // Drum FX: Chaos [0..63] default 0
+  P_ARP_MODE = 30,  // Auto FX: Arp [0..6] default 0
+  P_ARP_RATE = 31,  // Auto FX: Arp Rate [1..50] default 17
+  P_SWEEP_AMOUNT = 32,  // Auto FX: Sweep [0..64] default 32
+  P_RETRIG_RATE = 33,  // Auto FX: Retrigger [0..50] default 0
+  P_ENV_MODE = 34,  // Envelope: Mode [0..1] default 0
+  P_ENV_ATTACK = 35,  // Envelope: Attack [1..32] default 1
+  P_ENV_DECAY = 36,  // Envelope: Decay [1..32] default 26
+  P_ENV_SUSTAIN = 37,  // Envelope: Sustain [0..32] default 32
+  P_ENV_RELEASE = 38,  // Envelope: Release [1..32] default 19
+  P_GLIDE = 39,  // Pitch & Response: Glide [0..100] default 0
+  P_TRANSPOSE = 40,  // Pitch & Response: Transpose [0..48] default 24
+  P_MIX_NOISE = 41,  // Mixer: Noise [0..15] default 15
+  P_MIX_TONE = 42,  // Mixer: Tone [0..15] default 15
+  P_MIX_DRUM = 43,  // Mixer: Drums [0..15] default 15
+  P_TEMPERAMENT = 44,  // Tuning: Temperament [0..9] default 0
+  P_TEMPER_ROOT = 45,  // Tuning: Root [0..11] default 0
+  P_VEL_SENSE = 46,  // Pitch & Response: Velocity [0..1] default 1
 };
 
-static const uint8_t PARAM_MIN[NUM_PARAMS] PROGMEM = { 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 50, 50, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
-static const uint8_t PARAM_MAX[NUM_PARAMS] PROGMEM = { 1, 8, 3, 64, 10, 120, 63, 64, 1, 32, 1, 200, 31, 200, 1, 200, 15, 1, 15, 200, 200, 200, 14, 50, 30, 1, 63, 6, 50, 64, 50, 1, 32, 32, 32, 32, 100, 48, 15, 15, 15, 9, 11, 1 };
-static const uint8_t PARAM_DEFAULT[NUM_PARAMS] PROGMEM = { 0, 1, 0, 32, 0, 30, 20, 0, 0, 8, 0, 50, 6, 0, 0, 40, 5, 0, 8, 100, 100, 100, 7, 0, 0, 0, 0, 0, 17, 32, 0, 0, 1, 26, 32, 19, 0, 24, 15, 15, 15, 0, 0, 1 };
+static const uint8_t PARAM_MIN[NUM_PARAMS] PROGMEM = { 0, 1, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 50, 50, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
+static const uint8_t PARAM_MAX[NUM_PARAMS] PROGMEM = { 1, 8, 3, 64, 10, 120, 63, 64, 1, 5, 15, 1, 32, 1, 200, 31, 200, 1, 200, 15, 1, 15, 200, 200, 200, 14, 50, 30, 1, 63, 6, 50, 64, 50, 1, 32, 32, 32, 32, 100, 48, 15, 15, 15, 9, 11, 1 };
+static const uint8_t PARAM_DEFAULT[NUM_PARAMS] PROGMEM = { 0, 1, 0, 32, 0, 30, 20, 0, 0, 0, 12, 0, 8, 0, 50, 6, 0, 0, 40, 5, 0, 8, 100, 100, 100, 7, 0, 0, 0, 0, 0, 17, 32, 0, 0, 1, 26, 32, 19, 0, 24, 15, 15, 15, 0, 0, 1 };
 
 // Ticks between events for the re-strike controls (Drum Roll,
 // Retrigger), indexed by the parameter value. The tick is 100Hz, so
@@ -107,6 +110,51 @@ static const uint16_t ENV_RATE[33] PROGMEM = {
 // bottom and a straight mapping therefore dives.
 static const uint8_t MIX_ATTEN[16] PROGMEM = {
   15, 13, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 2, 1, 1, 0
+};
+
+// Wavetable voice. Sixty-four steps, values 0..15 -- the amplitude
+// register IS the output once tone and noise are switched off, so
+// this is a 4-bit DAC and these are the waveforms it draws. Four bits
+// is coarse, which is the point: it sounds like the hardware it is.
+#define WAVE_LEN 64
+#define WAVE_COUNT 6
+static const uint8_t WAVE_TABLES[WAVE_COUNT][WAVE_LEN] PROGMEM = {
+  { // sine
+    8, 8, 9, 10, 10, 11, 12, 12, 13, 13, 14, 14, 14, 15, 15, 15,
+    15, 15, 15, 15, 14, 14, 14, 13, 13, 12, 12, 11, 10, 10, 9, 8,
+    8, 7, 6, 5, 5, 4, 3, 3, 2, 2, 1, 1, 1, 0, 0, 0,
+    0, 0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 4, 5, 5, 6, 7,
+  },
+  { // triangle
+    0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7,
+    8, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15,
+    15, 15, 14, 14, 13, 13, 12, 12, 11, 11, 10, 10, 9, 9, 8, 8,
+    8, 7, 7, 6, 6, 5, 5, 4, 4, 3, 3, 2, 2, 1, 1, 0,
+  },
+  { // saw down
+    15, 15, 15, 14, 14, 14, 14, 13, 13, 13, 13, 12, 12, 12, 12, 11,
+    11, 11, 11, 11, 10, 10, 10, 10, 9, 9, 9, 9, 8, 8, 8, 8,
+    8, 7, 7, 7, 7, 6, 6, 6, 6, 5, 5, 5, 5, 4, 4, 4,
+    4, 4, 3, 3, 3, 3, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0,
+  },
+  { // ramp up
+    0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3, 4,
+    4, 4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7,
+    8, 8, 8, 8, 8, 9, 9, 9, 9, 10, 10, 10, 10, 11, 11, 11,
+    11, 11, 12, 12, 12, 12, 13, 13, 13, 13, 14, 14, 14, 14, 15, 15,
+  },
+  { // pulse 25%
+    15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  },
+  { // vocal
+    10, 12, 13, 13, 13, 12, 11, 11, 10, 10, 10, 10, 10, 11, 10, 10,
+    10, 9, 9, 9, 10, 11, 12, 13, 14, 15, 15, 14, 13, 11, 9, 7,
+    5, 3, 2, 2, 2, 3, 4, 4, 5, 5, 5, 5, 5, 4, 5, 5,
+    5, 6, 6, 6, 5, 4, 3, 2, 1, 0, 0, 1, 2, 4, 6, 8,
+  },
 };
 
 #endif // PARAMETERS_H

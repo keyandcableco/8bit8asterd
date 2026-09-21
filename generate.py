@@ -55,14 +55,14 @@ PARAMS = [
     # --- Buzzy Bass --------------------------------------------------------
     dict(key="buzz_enable", label="Enable", group="Buzzy Bass", kind="toggle",
          default=0,
-         help="Lowest held note's volume follows the chip's envelope generator."),
+         help="Points the lowest held note's volume at the chip's envelope generator. Set to a looping shape it is an oscillator, so the note becomes a sawtooth or triangle rather than a square."),
     dict(key="buzz_ratio", label="Ratio", group="Buzzy Bass", kind="int",
          min=1, max=8, default=1,
-         help="Envelope rate vs. note pitch. No exact formula — tune by ear."),
+         help="How far below the note the envelope oscillates: 1 is unison, 2 an octave down, 4 two octaves. At unison it is a waveform; lower it becomes a sub-oscillator."),
     dict(key="buzz_shape", label="Shape", group="Buzzy Bass", kind="enum",
          options=["Saw \u2193", "Tri \u2193\u2191", "Saw \u2191", "Tri \u2191\u2193"],
          default=0,
-         help="The four AY envelope shapes that loop continuously."),
+         help="Which looping envelope shape the hardware runs: 0 and 2 are sawtooths, 1 and 3 triangles. This is where a non-square waveform comes from -- the chip has no other."),
     dict(key="buzz_detune", label="Detune", group="Buzzy Bass", kind="int",
          min=0, max=64, default=32, offset=-32,
          help="Offsets the envelope against the square wave. Non-zero gives "
@@ -97,6 +97,23 @@ PARAMS = [
               "settles. 0 = Rate stays put."),
 
     # --- Vibrato -----------------------------------------------------------
+    dict(key="wave_enable", label="Enable", group="Wavetable", kind="toggle",
+         default=0,
+         help="Takes over one channel and writes its volume register from a "
+              "table at audio rate, tone off. The register becomes a 4-bit "
+              "DAC, so the voice plays a real waveform instead of a square. "
+              "Costs a voice and follows the highest note held."),
+    dict(key="wave_shape", label="Shape", group="Wavetable", kind="enum",
+         options=["Sine", "Triangle", "Saw", "Ramp", "Pulse 25%", "Vocal"],
+         default=0,
+         help="Sine and triangle are softer than anything the chip makes on "
+              "its own. Pulse gives the narrow-square sound the AY cannot do "
+              "in hardware. Vocal is a formant shape, somewhere near an 'ah'."),
+    dict(key="wave_level", label="Level", group="Wavetable", kind="int",
+         min=1, max=15, default=12,
+         help="Peak of the waveform. Low values lose resolution fast, since "
+              "there are only sixteen amplitude steps to draw it with."),
+
     dict(key="uni_enable", label="Enable", group="Unison", kind="toggle",
          default=0,
          help="Doubles each melodic note on a second voice a little out of "
@@ -265,7 +282,7 @@ PARAMS = [
 # Missing keys fall back to the parameter's default.
 PRESETS = {
     "Init": {},
-    "Buzz Bass Lead": dict(buzz_enable=1, buzz_ratio=2, buzz_shape=0,
+    "Buzz Bass Lead": dict(buzz_enable=1, buzz_ratio=1, buzz_shape=0,
                            vib_enable=1, vib_rate=55, vib_depth=5, vib_delay=60),
     "Haunted Organ": dict(vib_enable=1, vib_rate=30, vib_depth=12,
                           trem_enable=1, trem_rate=35, trem_depth=6,
@@ -279,11 +296,11 @@ PRESETS = {
                          vib_enable=1, vib_rate=80, vib_depth=4, vib_delay=40),
     "808 Kit": dict(drum_tune=78, drum_decay=165, drum_bend=130, drum_noise=9),
     "Tight Kit": dict(drum_tune=118, drum_decay=62, drum_bend=70, drum_noise=5),
-    "MadMax Buzzer": dict(buzz_enable=1, buzz_ratio=2, buzz_shape=1,
+    "MadMax Buzzer": dict(buzz_enable=1, buzz_ratio=1, buzz_shape=1,
                           buzz_detune=38, env_mode=1, env_attack=1,
                           env_decay=31, env_sustain=30, env_release=24),
     "Arcade Warp": dict(warp_mode=1, warp_rate=95, warp_depth=40,
-                        buzz_enable=1, buzz_ratio=3, buzz_detune=36),
+                        buzz_enable=1, buzz_ratio=2, buzz_detune=36),
     "Broken Cabinet": dict(warp_mode=3, warp_rate=22, warp_depth=55,
                            noise_enable=1, noise_period=6),
     "Tape Eaten": dict(warp_mode=5, warp_rate=70, warp_depth=34,
@@ -293,7 +310,7 @@ PRESETS = {
     "Dying Console": dict(warp_mode=7, warp_rate=48, warp_depth=40,
                           warp_motion=9, noise_enable=1, noise_period=9),
     "Ring Zone": dict(warp_mode=8, warp_rate=105, warp_depth=30,
-                      warp_motion=26, buzz_enable=1, buzz_ratio=2),
+                      warp_motion=26, buzz_enable=1, buzz_ratio=1),
     "Buzz Roll": dict(drum_roll=45, drum_decay=70, drum_chaos=10),
     "Drunk Drummer": dict(drum_flam=7, drum_chaos=38, drum_tune=92,
                           drum_decay=120),
@@ -335,7 +352,7 @@ SECTIONS = [
          groups=["Mixer"]),
     dict(key="tone", title="Tone Voices", scope="pitched voices",
          blurb="The melodic side. Nothing here touches the drum channel.",
-         groups=["Envelope", "Tuning", "Pitch & Response", "Buzzy Bass", "Unison",
+         groups=["Envelope", "Tuning", "Pitch & Response", "Buzzy Bass", "Unison", "Wavetable",
                  "Vibrato", "Tremolo", "Noise Blend", "Auto FX"]),
     dict(key="drum", title="Drum Voices", scope="MIDI channel 10",
          blurb="Percussion only. Drums are the voices driven by each chip's "
@@ -492,6 +509,35 @@ def emit_header(path):
     a("// bottom and a straight mapping therefore dives.")
     a("static const uint8_t MIX_ATTEN[16] PROGMEM = {")
     a("  15, 13, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 2, 1, 1, 0")
+    a("};")
+    a("")
+    a("// Wavetable voice. Sixty-four steps, values 0..15 -- the amplitude")
+    a("// register IS the output once tone and noise are switched off, so")
+    a("// this is a 4-bit DAC and these are the waveforms it draws. Four bits")
+    a("// is coarse, which is the point: it sounds like the hardware it is.")
+    a("#define WAVE_LEN 64")
+    a("#define WAVE_COUNT 6")
+    a("static const uint8_t WAVE_TABLES[WAVE_COUNT][WAVE_LEN] PROGMEM = {")
+    import math
+    def emit(name, fn):
+        vals = []
+        for i in range(64):
+            v = fn(i / 64.0)
+            vals.append(str(max(0, min(15, int(round(v * 15))))))
+        a("  { // " + name)
+        for j in range(0, 64, 16):
+            a("    " + ", ".join(vals[j:j + 16]) + ",")
+        a("  },")
+    emit("sine",      lambda t: 0.5 + 0.5 * math.sin(2 * math.pi * t))
+    emit("triangle",  lambda t: 2 * t if t < 0.5 else 2 * (1 - t))
+    emit("saw down",  lambda t: 1 - t)
+    emit("ramp up",   lambda t: t)
+    emit("pulse 25%", lambda t: 1.0 if t < 0.25 else 0.0)
+    # Two stacked formants, roughly an "ah": the chip cannot filter, so the
+    # shape has to carry the resonance itself.
+    emit("vocal", lambda t: 0.5 + 0.30 * math.sin(2 * math.pi * t)
+                                + 0.22 * math.sin(2 * math.pi * 3 * t + 0.4)
+                                + 0.12 * math.sin(2 * math.pi * 5 * t + 1.1))
     a("};")
     a("")
     a("#endif // PARAMETERS_H")

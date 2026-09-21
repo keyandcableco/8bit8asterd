@@ -39,6 +39,7 @@ void emuWriteReg(uint8_t chip, unsigned char reg, unsigned char db) {
 
 // The firmware is one translation unit, exactly as the Arduino IDE builds it.
 #define AY_EMULATOR 1
+extern "C" void emu_wave_tick();
 #include "../8b8_firmware.ino"
 
 // ---------------------------------------------------------------------------
@@ -83,6 +84,7 @@ static double   seqSamplesPerStep = 0.0, seqAcc = 0.0;
 static double  sampleRate   = 44100.0;
 static double  stepCarry    = 0.0;
 static double  loopAccUs    = 0.0;
+static double  waveAccUs    = 0.0;
 static bool    started      = false;
 
 extern "C" {
@@ -91,6 +93,7 @@ void emu_init(double rate) {
   sampleRate = rate;
   stepCarry = 0.0;
   loopAccUs = 0.0;
+  waveAccUs = 0.0;
   dcPrev = dcOut = 0.0;
   emuMicros = 0;
   memset(emuEeprom, 0xFF, sizeof emuEeprom);
@@ -115,6 +118,15 @@ void emu_render(float *out, int n) {
     // fastest timer is 4kHz. Polling at ~8kHz is ample and cuts the work by
     // about five sixths, which matters on a phone where this shares a thread
     // with the audio callback.
+    // The wavetable voice runs off Timer3 on the hardware. Here it is
+    // ticked from the render loop at the same rate, or the emulator would
+    // simply not have the feature.
+    waveAccUs += usPerSample;
+    while (waveAccUs >= (1000000.0 / 16000.0)) {
+      waveAccUs -= (1000000.0 / 16000.0);
+      emu_wave_tick();
+    }
+
     emuMicros += (uint64_t)usPerSample;
     loopAccUs += usPerSample;
     if (loopAccUs >= 125.0) {      // ~8kHz
