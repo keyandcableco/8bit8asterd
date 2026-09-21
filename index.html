@@ -818,6 +818,16 @@
     </div>
 
     <div class="module">
+      <h2>MIDI File</h2>
+      <div class="bar" style="margin:0 13px 10px;">
+        <input type="file" id="midiFileInput" accept=".mid,.midi,audio/midi">
+        <button class="btn" id="midiPlayBtn">Play File</button>
+        <span class="spacer"></span>
+      </div>
+      <p class="section-blurb" id="midiFileInfo">No file loaded. Channel 10 plays the drum kit; every other channel goes to the tone voices.</p>
+    </div>
+
+    <div class="module">
       <h2>Note Sequencer</h2>
       <div class="cc-row">
         <div class="cc">
@@ -2144,6 +2154,196 @@ document.addEventListener('pointerdown', e => {
   window.addEventListener('pointercancel', up);
 });
 
+
+/* ==== Standard MIDI File playback ======================================= */
+// A .mid is a header chunk then one track chunk per part, each a stream of
+// delta-time + event. The awkward parts are variable-length quantities, the
+// running status byte that lets an event omit its status if it matches the
+// last one, and the fact that tempo lives in meta events which may appear
+// anywhere and change mid-piece -- so ticks cannot be turned into seconds
+// until every track has been merged into one timeline.
+
+function midiReader(buf){
+  const d = new DataView(buf), u = new Uint8Array(buf);
+  let p = 0;
+  return {
+    pos: () => p,
+    seek: n => { p = n; },
+    left: () => u.length - p,
+    u8:  () => u[p++],
+    u16: () => { const v = d.getUint16(p); p += 2; return v; },
+    u32: () => { const v = d.getUint32(p); p += 4; return v; },
+    str: n => { let s = ''; for (let i = 0; i < n; i++) s += String.fromCharCode(u[p++]); return s; },
+    skip: n => { p += n; },
+    // Variable-length quantity: seven bits per byte, top bit means "more".
+    vlq: () => {
+      let v = 0, b;
+      do { b = u[p++]; v = (v << 7) | (b & 0x7F); } while (b & 0x80);
+      return v;
+    }
+  };
+}
+
+function parseMidiFile(buf){
+  const r = midiReader(buf);
+  if (r.str(4) !== 'MThd') throw new Error('not a MIDI file (no MThd header)');
+  const hdrLen = r.u32();
+  const format = r.u16();
+  const ntrks  = r.u16();
+  const division = r.u16();
+  r.skip(hdrLen - 6);                       // headers may be longer than six
+  if (format === 2) throw new Error('format 2 files are independent sequences, not a song');
+
+  // Every event from every track, on one timeline measured in ticks.
+  const all = [];
+  for (let t = 0; t < ntrks && r.left() > 8; t++){
+    if (r.str(4) !== 'MTrk'){ break; }
+    const len = r.u32();
+    const end = r.pos() + len;
+    let tick = 0, running = 0;
+    while (r.pos() < end){
+      tick += r.vlq();
+      let st = r.u8();
+      if (st < 0x80){ r.seek(r.pos() - 1); st = running; }   // running status
+      else if (st < 0xF0) running = st;
+
+      if (st === 0xFF){                       // meta
+        const type = r.u8(), n = r.vlq();
+        if (type === 0x51 && n === 3){
+          const a = r.u8(), b = r.u8(), c = r.u8();
+          all.push({ tick, meta: 'tempo', usPerBeat: (a << 16) | (b << 8) | c });
+        } else r.skip(n);
+      } else if (st === 0xF0 || st === 0xF7){
+        r.skip(r.vlq());                      // sysex, nothing here wants it
+      } else {
+        const cmd = st & 0xF0, chan = st & 0x0F;
+        const d1 = r.u8();
+        const d2 = (cmd === 0xC0 || cmd === 0xD0) ? 0 : r.u8();
+        if (cmd === 0x90 && d2 > 0)      all.push({ tick, on: true,  chan, note: d1, vel: d2 });
+        else if (cmd === 0x80 || cmd === 0x90) all.push({ tick, on: false, chan, note: d1 });
+      }
+    }
+    r.seek(end);
+  }
+
+  all.sort((a, b) => a.tick - b.tick);
+
+  // Ticks to seconds. SMPTE division is a fixed tick rate; otherwise ticks
+  // are per quarter note and the rate moves with every tempo change.
+  const smpte = (division & 0x8000) !== 0;
+  const smpteRate = smpte ? ((256 - (division >> 8)) * (division & 0xFF)) : 0;
+  let usPerBeat = 500000;                     // 120bpm until told otherwise
+  let lastTick = 0, seconds = 0;
+  const out = [];
+  for (const e of all){
+    const dt = e.tick - lastTick;
+    seconds += smpte ? (dt / smpteRate)
+                     : (dt * usPerBeat / (division * 1000000));
+    lastTick = e.tick;
+    if (e.meta === 'tempo'){ usPerBeat = e.usPerBeat; continue; }
+    out.push({ t: seconds, on: e.on, chan: e.chan, note: e.note, vel: e.vel || 100 });
+  }
+
+  // How many notes want to sound at once: nine is all there is.
+  let live = 0, peak = 0;
+  for (const e of out){ live += e.on ? 1 : -1; if (live > peak) peak = live; }
+
+  return { events: out, duration: seconds, tracks: ntrks, format, peak };
+}
+
+/* ---- playback ---- */
+// One timer, firing everything whose time has passed. Deliberately NOT
+// looking ahead: notes are played the instant they are dispatched, so
+// dispatching early would play them early -- a lookahead only helps when the
+// events can carry a timestamp, which these cannot. A short interval keeps
+// the error small and always on the late side, which is the forgiving one.
+let midiFile = null, midiPlaying = false, midiTimer = null;
+let midiStartedAt = 0, midiNext = 0, midiHeldNotes = [];
+
+function midiStatus(msg){
+  const el = document.getElementById('midiFileInfo');
+  if (el) el.textContent = msg;
+}
+
+function midiAllOff(){
+  midiHeldNotes.forEach(e => stopNote(e.note, e.chan === 9 ? 9 : 0));
+  midiHeldNotes = [];
+}
+
+function midiStop(){
+  midiPlaying = false;
+  if (midiTimer) clearInterval(midiTimer);
+  midiTimer = null;
+  midiAllOff();
+  const b = document.getElementById('midiPlayBtn');
+  if (b) b.textContent = 'Play File';
+}
+
+function midiPlay(){
+  if (!midiFile || !midiFile.events.length) return;
+  midiStop();
+  midiPlaying = true;
+  midiNext = 0;
+  midiStartedAt = performance.now();
+  const b = document.getElementById('midiPlayBtn');
+  if (b) b.textContent = 'Stop File';
+
+  midiTimer = setInterval(() => {
+    if (!midiPlaying) return;
+    const now = (performance.now() - midiStartedAt) / 1000;
+    while (midiNext < midiFile.events.length && midiFile.events[midiNext].t <= now){
+      const e = midiFile.events[midiNext++];
+      // Channel 10 is percussion by convention; everything else is melodic.
+      const ch = (e.chan === 9) ? 9 : 0;
+      if (e.on){
+        playNote(e.note, e.vel, ch);
+        if (ch !== 9) midiHeldNotes.push(e);
+      } else {
+        // Route the release to the channel it was played on. Sending a drum's
+        // note-off to channel 0 would stop whichever melodic voice happened to
+        // be holding that same note number.
+        stopNote(e.note, ch);
+        const i = midiHeldNotes.findIndex(h => h.note === e.note && h.chan === e.chan);
+        if (i >= 0) midiHeldNotes.splice(i, 1);
+      }
+    }
+    midiStatus(now.toFixed(1) + ' / ' + midiFile.duration.toFixed(1) + ' s');
+    if (midiNext >= midiFile.events.length && now > midiFile.duration + 0.5) midiStop();
+  }, 5);
+}
+
+function buildMidiFile(){
+  const input = document.getElementById('midiFileInput');
+  const btn   = document.getElementById('midiPlayBtn');
+  if (!input || !btn) return;
+
+  input.onchange = () => {
+    const f = input.files && input.files[0];
+    if (!f) return;
+    const fr = new FileReader();
+    fr.onload = () => {
+      try {
+        midiFile = parseMidiFile(fr.result);
+        const warn = midiFile.peak > 9
+          ? '  \u2014 wants ' + midiFile.peak + ' notes at once, only 9 voices: some will be stolen'
+          : '';
+        midiStatus(f.name + ': ' + midiFile.events.length + ' notes, ' +
+                   midiFile.duration.toFixed(1) + 's, ' + midiFile.tracks + ' track(s)' + warn);
+        log(midiFile.peak > 9 ? 'err' : 'sys',
+            'Loaded ' + f.name + ' (format ' + midiFile.format + ', peak polyphony ' +
+            midiFile.peak + ')');
+      } catch (err){
+        midiFile = null;
+        midiStatus('Could not read that file: ' + err.message);
+        log('err', 'MIDI file: ' + err.message);
+      }
+    };
+    fr.readAsArrayBuffer(f);
+  };
+
+  btn.onclick = () => { midiPlaying ? midiStop() : midiPlay(); };
+}
+
 /* ==== Drum sequencer ==================================================== */
 // Sixteen steps against a drift-corrected clock: each tick schedules the
 // next from when it SHOULD have fired, so the pattern does not wander the
@@ -2431,6 +2631,7 @@ function buildSequencer(){
   document.getElementById('seqClear').onclick = () => loadPattern('Empty');   // this page
 
   buildNoteSequencer();
+  buildMidiFile();
   loadPattern('Four/Four');
   document.getElementById('seqPreset').value = 'Four/Four';
   paintLength();
