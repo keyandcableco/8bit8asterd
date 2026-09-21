@@ -644,6 +644,7 @@ public:
   static const int AMPL_MAX = 1023;
   ushort m_adsr;
   uint8_t m_partner;      // the unison twin's voice number, or NO_VOICE
+  bool m_softEnv;         // decay in software; the chip's envelope is taken
   uint8_t m_envAcc;       // 1/16ths carried between ticks
 
   // Rates are in 1/16ths of an amplitude unit per tick, so a four second
@@ -744,8 +745,9 @@ public:
 
   struct FXParams m_fxp;
   
-  void startFX(const struct FXParams &fxp) {
+  void startFX(const struct FXParams &fxp, bool softEnv = false) {
     m_fxp = fxp;
+    m_softEnv = softEnv;
     m_age = 0;        // percussion is age-ranked for stealing too
   
     if (m_ampl > 0) {
@@ -770,12 +772,16 @@ public:
 
   // setEnvelope() derives the chip internally via ch % 3, so m_chan can be
   // passed straight through (no need to re-decode which chip it belongs to).
-  psg.setEnvelope(m_chan, fxp.envdecay, m_shape);
+    // Skipped in software mode: writing the period and shape here is exactly
+    // what truncates a drum already decaying on this chip.
+    if (!m_softEnv) psg.setEnvelope(m_chan, fxp.envdecay, m_shape);
 #ifdef DEBUG
   Serial.print("CH: ");
   Serial.println(m_chan);
 #endif
-    psg.setToneAndNoise(m_chan, fxp.tonefreq, fxp.noisefreq, 30);
+    // Amplitude 30 sets the M bit, pointing the channel at the envelope.
+    // A software-envelope drum takes its level from m_ampl each tick instead.
+    psg.setToneAndNoise(m_chan, fxp.tonefreq, fxp.noisefreq, m_softEnv ? 15 : 30);
   }
   
 
@@ -1341,13 +1347,21 @@ static bool startPercussion(note_t note) {
 
   // Prefer a chip whose envelope generator is idle, so this hit does not cut
   // short a drum already sounding on the same chip.
-  uint8_t v = claimVoice(freeEnvelopeChip());
+  const int8_t chip = freeEnvelopeChip();
+  uint8_t v = claimVoice(chip);
   if (v == NO_VOICE) return false;
 
   FXParams fxp;
   memcpy_P(&fxp, &perc_params[note - PERC_MIN], sizeof(FXParams));
   applyDrumMods(fxp);
-  voices[v].startFX(fxp);
+  // One envelope generator per chip, shared by its three channels. A drum
+  // landing on a chip whose envelope is already running would overwrite the
+  // period and restart it, cutting the drum that was there. Hats show this
+  // worst: they are the most frequent hit and carry the shortest period in
+  // the kit, so a hat on a ringing crash drops 2500 to 300 and truncates it
+  // eightfold. When no chip is free the new drum decays in software instead,
+  // which is coarser but disturbs nothing.
+  voices[v].startFX(fxp, chip < 0);
   m_playing[v] = PERC_NOTE;
 
   if (params[P_DRUM_FLAM] > 0 && !flamFiring) {
@@ -2214,7 +2228,8 @@ static void update100Hz() {
     // envelope (M bit set), whose full scale cannot be scaled -- so to get a
     // level at all the voice is moved onto its own software amplitude.
     // Slightly softer transient, which is why 15 leaves it alone entirely.
-    if (params[P_MIX_DRUM] < 15 && m_playing[i] == PERC_NOTE && voices[i].isPlaying()) {
+    if ((params[P_MIX_DRUM] < 15 || voices[i].m_softEnv)
+        && m_playing[i] == PERC_NOTE && voices[i].isPlaying()) {
       uint8_t dcut = pgm_read_byte(&MIX_ATTEN[params[P_MIX_DRUM] & 15]);
       int da = (voices[i].m_ampl >> 6) - (int)dcut;
       if (da < 0) da = 0;
