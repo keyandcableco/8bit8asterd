@@ -1363,9 +1363,15 @@ __TRANSPORT_UI__
         <label for="midiFileInput">Choose .mid</label>
         <span class="fname" id="midiFileName">no file</span>
         <span class="spacer"></span>
+        <span class="label">Speed</span>
+        <input type="range" id="midiSpeed" min="25" max="200" value="100"
+               style="flex:1 1 120px;max-width:180px">
+        <span class="value" id="midiSpeedVal">1.00x</span>
+        <span class="label">Loop</span>
+        <div class="switch" id="midiLoopSw"><div class="led"></div></div>
         <button class="btn" id="midiPlayBtn">Play File</button>
       </div>
-      <p class="section-blurb" id="midiFileInfo">No file loaded. Channel 10 plays the drum kit; every other channel goes to the tone voices.</p>
+      <p class="section-blurb" id="midiFileInfo">No file loaded. Channel 10 plays the drum kit; every other channel goes to the tone voices, so every setting on this panel shapes the playback &mdash; temperament, envelope, unison, the Warp Zone, all of it.</p>
     </div>
 
     <div class="module">
@@ -2656,7 +2662,12 @@ function parseMidiFile(buf){
 // events can carry a timestamp, which these cannot. A short interval keeps
 // the error small and always on the late side, which is the forgiving one.
 let midiFile = null, midiPlaying = false, midiTimer = null;
-let midiStartedAt = 0, midiNext = 0, midiHeldNotes = [];
+let midiNext = 0, midiHeldNotes = [];
+let midiSpeed = 1.0, midiLoop = false;
+// The play position is accumulated rather than derived from a start time, so
+// the speed can change mid-file without the position jumping, and a loop can
+// reset it without disturbing anything else.
+let midiClock = 0, midiLastReal = 0;
 
 function midiStatus(msg){
   const el = document.getElementById('midiFileInfo');
@@ -2682,13 +2693,17 @@ function midiPlay(){
   midiStop();
   midiPlaying = true;
   midiNext = 0;
-  midiStartedAt = performance.now();
+  midiClock = 0;
+  midiLastReal = performance.now();
   const b = document.getElementById('midiPlayBtn');
   if (b) b.textContent = 'Stop File';
 
   midiTimer = setInterval(() => {
     if (!midiPlaying) return;
-    const now = (performance.now() - midiStartedAt) / 1000;
+    const real = performance.now();
+    midiClock += ((real - midiLastReal) / 1000) * midiSpeed;
+    midiLastReal = real;
+    const now = midiClock;
     while (midiNext < midiFile.events.length && midiFile.events[midiNext].t <= now){
       const e = midiFile.events[midiNext++];
       // Channel 10 is percussion by convention; everything else is melodic.
@@ -2705,8 +2720,21 @@ function midiPlay(){
         if (i >= 0) midiHeldNotes.splice(i, 1);
       }
     }
-    midiStatus(now.toFixed(1) + ' / ' + midiFile.duration.toFixed(1) + ' s');
-    if (midiNext >= midiFile.events.length && now > midiFile.duration + 0.5) midiStop();
+    midiStatus(now.toFixed(1) + ' / ' + midiFile.duration.toFixed(1) + ' s' +
+               (midiSpeed !== 1 ? '   x' + midiSpeed.toFixed(2) : '') +
+               (midiLoop ? '   loop' : ''));
+
+    if (midiNext >= midiFile.events.length && now > midiFile.duration + 0.25){
+      if (midiLoop){
+        // Release everything before restarting, or a note held across the
+        // join would never get its note-off and would hang for good.
+        midiAllOff();
+        midiNext = 0;
+        midiClock = 0;
+      } else {
+        midiStop();
+      }
+    }
   }, 5);
 }
 
@@ -2742,6 +2770,19 @@ function buildMidiFile(){
   };
 
   btn.onclick = () => { midiPlaying ? midiStop() : midiPlay(); };
+
+  const spd = document.getElementById('midiSpeed');
+  const spdVal = document.getElementById('midiSpeedVal');
+  if (spd) spd.oninput = () => {
+    midiSpeed = (parseInt(spd.value, 10) || 100) / 100;
+    spdVal.textContent = midiSpeed.toFixed(2) + 'x';
+  };
+
+  const loopSw = document.getElementById('midiLoopSw');
+  if (loopSw) loopSw.onclick = () => {
+    midiLoop = !midiLoop;
+    loopSw.classList.toggle('active', midiLoop);
+  };
 }
 
 /* ==== Drum sequencer ==================================================== */
