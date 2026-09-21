@@ -1941,8 +1941,23 @@ static void warpTick() {
                 // all three chips: pitch, noise colour, envelope rates and
                 // drum decays all move together. That is vari-speed rather
                 // than a pitch shift, and nothing downstream can imitate it.
-      int8_t m = (int8_t)pgm_read_byte(&lfoSine[(warpRamp >> 2) & 31]);
-      int16_t swing = ((int16_t)m * (int16_t)warpScale(depth, 5)) / 127;
+      // Depth reaches thirteen divisor steps, so the clock can fall to
+      // 380kHz. A YM2149 with its SEL pin low runs at 500kHz, the halving a
+      // hardware clock switch gives; the old ceiling of five stopped at
+      // 615kHz, short of that, so the effect could not reach the sound the
+      // switch makes.
+      const uint8_t amt = warpScale(depth, 13);
+      int16_t swing;
+      if (params[P_WARP_RATE] <= 1) {
+        // Slowest rate holds the clock down rather than sweeping through it.
+        // A halving button is a switch, not a wobble, and a sine only visits
+        // its extreme for an instant; held, the whole instrument sits slow
+        // and coarse, which is where the grit is.
+        swing = (int16_t)amt;
+      } else {
+        int8_t m = (int8_t)pgm_read_byte(&lfoSine[(warpRamp >> 2) & 31]);
+        swing = ((int16_t)m * (int16_t)amt) / 127;
+      }
       int d = (int)DIVISOR + (int)swing;
       // The AY-3-8910 is rated to 2MHz. Stopping at 1.6MHz leaves headroom
       // for forty-year-old parts rather than running them at the limit for

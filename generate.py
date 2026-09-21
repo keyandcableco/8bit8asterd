@@ -86,7 +86,8 @@ PARAMS = [
     dict(key="warp_rate", label="Rate", group="Warp Zone", kind="int",
          min=1, max=120, default=30,
          help="Low = slow chopping. High reaches audio rate and becomes a "
-              "tone in its own right."),
+              "tone in its own right. In Clock Warp, 1 holds the clock down "
+              "instead of sweeping it, the way a clock-halving switch does."),
     dict(key="warp_depth", label="Depth", group="Warp Zone", kind="int",
          min=1, max=63, default=20,
          help="How violent the effect is."),
