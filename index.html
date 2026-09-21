@@ -378,6 +378,23 @@
     color:var(--text-dim); letter-spacing:.05em;
   }
 
+  /* ---- File picker: a bare input[type=file] renders in OS colours, which
+         on this panel is dark text on a dark background and looks like
+         nothing is there at all ---- */
+  .filepick{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .filepick input[type=file]{ display:none; }
+  .filepick label{
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    padding:11px 16px; cursor:pointer; color:var(--text);
+    background:linear-gradient(180deg, var(--body-lit) 0%, var(--body) 100%);
+    border:2px solid var(--bezel);
+  }
+  .filepick label:hover{ color:var(--accent-lit); }
+  .filepick .fname{
+    font-family:var(--mono); font-size:calc(11px * var(--ui-scale));
+    color:var(--text-dim);
+  }
+
   /* ---- Sequencer ---- */
   /* Outside the pattern: clearly inactive, but a note placed there must
      still be legible -- at a quarter opacity it vanished entirely. */
@@ -408,6 +425,23 @@
   .transport .tinfo{
     font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
     color:var(--text-dim); letter-spacing:.05em;
+  }
+
+  /* ---- File picker: a bare input[type=file] renders in OS colours, which
+         on this panel is dark text on a dark background and looks like
+         nothing is there at all ---- */
+  .filepick{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .filepick input[type=file]{ display:none; }
+  .filepick label{
+    font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
+    padding:11px 16px; cursor:pointer; color:var(--text);
+    background:linear-gradient(180deg, var(--body-lit) 0%, var(--body) 100%);
+    border:2px solid var(--bezel);
+  }
+  .filepick label:hover{ color:var(--accent-lit); }
+  .filepick .fname{
+    font-family:var(--mono); font-size:calc(11px * var(--ui-scale));
+    color:var(--text-dim);
   }
 
   /* ---- Sequencer ---- */
@@ -819,10 +853,12 @@
 
     <div class="module">
       <h2>MIDI File</h2>
-      <div class="bar" style="margin:0 13px 10px;">
+      <div class="bar filepick" style="margin:0 13px 10px;">
         <input type="file" id="midiFileInput" accept=".mid,.midi,audio/midi">
-        <button class="btn" id="midiPlayBtn">Play File</button>
+        <label for="midiFileInput">Choose .mid</label>
+        <span class="fname" id="midiFileName">no file</span>
         <span class="spacer"></span>
+        <button class="btn" id="midiPlayBtn">Play File</button>
       </div>
       <p class="section-blurb" id="midiFileInfo">No file loaded. Channel 10 plays the drum kit; every other channel goes to the tone voices.</p>
     </div>
@@ -2319,7 +2355,9 @@ function buildMidiFile(){
 
   input.onchange = () => {
     const f = input.files && input.files[0];
+    const nameEl = document.getElementById('midiFileName');
     if (!f) return;
+    if (nameEl) nameEl.textContent = f.name;
     const fr = new FileReader();
     fr.onload = () => {
       try {
