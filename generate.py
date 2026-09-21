@@ -75,7 +75,8 @@ PARAMS = [
     # normal voice updates keep fighting them -- that fight is the sound.
     dict(key="warp_mode", label="Mode", group="Warp Zone", kind="enum",
          options=["Off", "Sync Buzz", "Stutter", "Scramble", "Zap",
-                  "Tape Stop", "Siren", "Crush", "Ring"],
+                  "Tape Stop", "Siren", "Crush", "Ring", "Env Crush",
+                  "Clock Warp"],
          default=0,
          help="Sync Buzz restarts the envelope. Stutter gates the mixer. "
               "Scramble throws junk at registers. Zap sweeps noise. The "
@@ -96,6 +97,17 @@ PARAMS = [
               "settles. 0 = Rate stays put."),
 
     # --- Vibrato -----------------------------------------------------------
+    dict(key="uni_enable", label="Enable", group="Unison", kind="toggle",
+         default=0,
+         help="Doubles each melodic note on a second voice a little out of "
+              "tune with the first. Halves how many notes can sound at once, "
+              "and the beating between the pair is what makes it wide."),
+    dict(key="uni_detune", label="Detune", group="Unison", kind="int",
+         min=1, max=32, default=8,
+         help="How far apart the pair sits. Low values beat slowly and "
+              "thicken; high values drift towards a chorus or an out-of-tune "
+              "honky-tonk."),
+
     dict(key="vib_enable", label="Enable", group="Vibrato", kind="toggle",
          default=0,
          help="Pitch LFO on all sounding melodic voices. Drums untouched."),
@@ -323,7 +335,7 @@ SECTIONS = [
          groups=["Mixer"]),
     dict(key="tone", title="Tone Voices", scope="pitched voices",
          blurb="The melodic side. Nothing here touches the drum channel.",
-         groups=["Envelope", "Tuning", "Pitch & Response", "Buzzy Bass",
+         groups=["Envelope", "Tuning", "Pitch & Response", "Buzzy Bass", "Unison",
                  "Vibrato", "Tremolo", "Noise Blend", "Auto FX"]),
     dict(key="drum", title="Drum Voices", scope="MIDI channel 10",
          blurb="Percussion only. Drums are the voices driven by each chip's "

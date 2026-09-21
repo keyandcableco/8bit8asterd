@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <cstdio>
+#include "../parameters.h"
 #include <vector>
 #include <cmath>
 #include <string>
@@ -15,8 +16,11 @@ static int periodForNote(int note, int temperament, int root) {
   emu_init(44100);
   std::vector<float> buf(2048);
   char cmd[64];
-  snprintf(cmd, sizeof cmd, "P:%d:%d", 39, temperament); emu_send_line(cmd);
-  snprintf(cmd, sizeof cmd, "P:%d:%d", 40, root);          emu_send_line(cmd);
+  // Indices come from the generated header, never hardcoded: they shift
+  // whenever a parameter is added, and this test silently passed nonsense
+  // the first time that happened.
+  snprintf(cmd, sizeof cmd, "P:%d:%d", P_TEMPERAMENT, temperament); emu_send_line(cmd);
+  snprintf(cmd, sizeof cmd, "P:%d:%d", P_TEMPER_ROOT, root);        emu_send_line(cmd);
   emu_render(buf.data(), 2048);
   emu_note_on(0, note, 100);
   emu_render(buf.data(), 2048);

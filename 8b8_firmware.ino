@@ -623,6 +623,7 @@ public:
   int m_attack, m_ampl, m_ampl_top, m_decay, m_sustain, m_release, m_shape;
   static const int AMPL_MAX = 1023;
   ushort m_adsr;
+  uint8_t m_partner;      // the unison twin's voice number, or NO_VOICE
   uint8_t m_envAcc;       // 1/16ths carried between ticks
 
   // Rates are in 1/16ths of an amplitude unit per tick, so a four second
@@ -977,6 +978,10 @@ static uint8_t m_voiceNo[N_NOTES];
 static void freeVoice(uint8_t v) {
   uint8_t idx = m_playing[v];
   if (idx != NO_NOTE && idx != PERC_NOTE) m_voiceNo[idx] = NO_VOICE;
+  // Anyone pointing at this voice as their twin no longer is.
+  for (uint8_t k = 0; k < MAX_VOICES; k++)
+    if (voices[k].m_partner == v) voices[k].m_partner = NO_VOICE;
+  voices[v].m_partner = NO_VOICE;
   m_playing[v] = NO_NOTE;
 }
 
@@ -1054,6 +1059,27 @@ static bool startNote(ushort idx) {
   voices[v].start(MIDI_MIN + idx, m_velocity[idx], m_chan[idx]);
   m_playing[v] = idx;
   m_voiceNo[idx] = v;
+  voices[v].m_partner = NO_VOICE;
+
+  // Unison: a second voice on the same note, slightly off. The beating
+  // between the pair is the whole point, so it is detuned by shifting the
+  // tone DIVISOR rather than by transposing -- a fixed divisor offset is a
+  // wider beat low down and a narrower one up high, which is how a real pair
+  // of oscillators drifts. Only taken if a voice is genuinely spare: stealing
+  // one to thicken a note would cost a note somewhere else.
+  if (params[P_UNI_ENABLE] && m_chan[idx] != PERC_CHANNEL) {
+    uint8_t u = findFreeVoice(-1);
+    if (u != NO_VOICE) {
+      voices[u].start(MIDI_MIN + idx, m_velocity[idx], m_chan[idx]);
+      int det = (int)voices[u].m_target + (int)params[P_UNI_DETUNE];
+      if (det > 4095) det = 4095;
+      voices[u].m_target = (ushort)det;
+      voices[u].m_pitch  = (ushort)det;
+      m_playing[u] = idx;
+      voices[v].m_partner = u;
+      voices[u].m_partner = NO_VOICE;   // the twin owns no one
+    }
+  }
   return true;
 }
   
@@ -1210,6 +1236,15 @@ static bool startPercussion(note_t note) {
 static bool stopNote(ushort idx) {
   uint8_t v = m_voiceNo[idx];
   if (v != NO_VOICE && m_playing[v] != NO_NOTE) {
+    // Release the twin first, or it would be left ringing with nothing
+    // pointing at it -- m_voiceNo only ever knows about the lead voice.
+    uint8_t u = voices[v].m_partner;
+    if (u != NO_VOICE && u < MAX_VOICES && m_playing[u] == idx) {
+      voices[u].stop();
+      m_playing[u] = NO_NOTE;
+      voices[u].m_partner = NO_VOICE;
+    }
+    voices[v].m_partner = NO_VOICE;
     voices[v].stop();
     m_playing[v] = NO_NOTE;
     m_voiceNo[idx] = NO_VOICE;
@@ -1374,6 +1409,16 @@ static void recalcDerived() {
   // up to ~4kHz, where the effect stops being rhythmic and becomes timbre.
   warpIntervalUs = 30000UL / params[P_WARP_RATE];
   if (warpIntervalUs < 250UL) warpIntervalUs = 250UL;
+
+  // Clock Warp leaves the master clock wherever it stopped, so put it back
+  // whenever that mode is not the one running.
+  if (params[P_WARP_MODE] != 10) {
+    uint8_t sreg = SREG;
+    cli();
+    OCR1AH = 0;
+    OCR1AL = DIVISOR;
+    SREG = sreg;
+  }
 
   // Retune anything already sounding. Transpose and temperament used to be
   // read once when a note started, so a held chord kept whatever tuning it
@@ -1622,6 +1667,46 @@ static void warpTick() {
         uint8_t v = psg.regs[c][lo] & mask;
         writeReg(c, lo, v);
       }
+      break;
+    }
+
+    case 9: {   // Env Crush -- the same quantising applied to the envelope
+                // period, so decays and buzz tones stair-step rather than
+                // the pitch. Different flavour, same gesture.
+      uint8_t peakBits = 1 + warpScale(depth, 6);
+      uint8_t bits = (uint8_t)(((uint16_t)(warpRamp & 0xFF) * peakBits) / 255u);
+      if (bits > 7) bits = 7;
+      uint16_t emask = (uint16_t)(~((1u << bits) - 1u));
+      for (uint8_t c = 0; c < 3; c++) {
+        uint16_t e = (uint16_t)psg.regs[c][PSGRegs::ENVLOW] |
+                     ((uint16_t)psg.regs[c][PSGRegs::ENVHIGH] << 8);
+        if (!e) continue;
+        uint16_t q = (uint16_t)(e & emask);
+        if (q < 1) q = 1;
+        writeReg(c, PSGRegs::ENVLOW,  (uint8_t)(q & 0xFF));
+        writeReg(c, PSGRegs::ENVHIGH, (uint8_t)(q >> 8));
+      }
+      break;
+    }
+
+    case 10: {  // Clock Warp -- wobble the AY master clock itself. The
+                // Leonardo generates it on Timer1, so this sits upstream of
+                // all three chips: pitch, noise colour, envelope rates and
+                // drum decays all move together. That is vari-speed rather
+                // than a pitch shift, and nothing downstream can imitate it.
+      int8_t m = (int8_t)pgm_read_byte(&lfoSine[(warpRamp >> 2) & 31]);
+      int16_t swing = ((int16_t)m * (int16_t)warpScale(depth, 5)) / 127;
+      int d = (int)DIVISOR + (int)swing;
+      // The AY-3-8910 is rated to 2MHz. Stopping at 1.6MHz leaves headroom
+      // for forty-year-old parts rather than running them at the limit for
+      // the sake of an effect; downward there is no such constraint.
+      if (d < 4) d = 4;            // 1.6MHz
+      if (d > 20) d = 20;          // 380kHz, a deep sag
+      uint8_t sreg = SREG;
+      cli();
+      OCR1AH = 0;
+      OCR1AL = (uint8_t)d;         // 16-bit register: high byte first
+      SREG = sreg;
       break;
     }
 

@@ -47,7 +47,14 @@ void emuWriteReg(uint8_t chip, unsigned char reg, unsigned char db) {
 // The chip model steps at clock/8 (see ay8910.h for why). The firmware
 // programs Timer1 for a 1MHz master clock, so that is 125000 steps a
 // second, box-filtered down to whatever rate the host asks for.
-static const double CHIP_STEP_HZ = 1000000.0 / 8.0;
+// The firmware generates the AY clock on Timer1, so the chips run at
+// 16MHz / (2 * (1 + OCR1A)) -- 1MHz at the default divisor of 7. Reading it
+// back each buffer is what lets Clock Warp work here: the emulator used a
+// fixed 1MHz and would simply have ignored the whole effect.
+static double chipClockHz() {
+  const double d = (double)OCR1AL;
+  return 16000000.0 / (2.0 * (1.0 + (d < 1.0 ? 1.0 : d)));
+}
 
 // Real boards AC-couple the chip output. Without modelling that, the steady
 // DC level a muted channel puts out shows up as offset in the render.
@@ -99,7 +106,7 @@ void emu_init(double rate) {
 // Renders n samples into out, running the firmware's loop() as time passes.
 void emu_render(float *out, int n) {
   if (!started) return;
-  const double stepsPerSample = CHIP_STEP_HZ / sampleRate;
+  const double stepsPerSample = (chipClockHz() / 8.0) / sampleRate;
   const double usPerSample    = 1000000.0 / sampleRate;
 
   for (int i = 0; i < n; i++) {
