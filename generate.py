@@ -1242,8 +1242,16 @@ __TRANSPORT_UI__
           <span class="cc-label">Harp</span>
         </div>
         <div class="cc">
-          <select id="harpKeySel"></select>
+          <select id="keySigSel"></select>
           <span class="cc-label">Key</span>
+        </div>
+        <div class="cc">
+          <select id="accModeSel">
+            <option value="0">Follow key</option>
+            <option value="1">Sharp</option>
+            <option value="2">Flat</option>
+          </select>
+          <span class="cc-label">Accidental</span>
         </div>
         <div class="cc">
           <select id="strumDirSel">
@@ -1759,6 +1767,51 @@ document.getElementById('diagBtn').onclick = () => send('DIAG');
 // sections whose notes come from the chord currently held.
 
 const ROOTS  = [['F',53],['C',48],['G',55],['D',50],['A',57],['E',52],['B',59]];
+
+// The columns are F C G D A E B, which is exactly the order sharps are added
+// to a signature and the reverse of the order flats are. So a key signature
+// falls onto the matrix in order: N sharps alter the first N columns, N flats
+// the last N. Choosing a key therefore respells the whole matrix at once --
+// in D you press the F button and get F# major.
+const KEY_SIGS = [
+  ['Cb', 11, -7], ['Gb',  6, -6], ['Db',  1, -5], ['Ab',  8, -4],
+  ['Eb',  3, -3], ['Bb', 10, -2], ['F',   5, -1], ['C',   0,  0],
+  ['G',   7,  1], ['D',   2,  2], ['A',   9,  3], ['E',   4,  4],
+  ['B',  11,  5], ['F#',  6,  6], ['C#',  1,  7]
+];
+let keySig = 7;                      // index into KEY_SIGS; 7 is C major
+
+// 0 = follow the signature (sharpen in sharp keys, flatten in flat keys),
+// 1 = always sharpen, 2 = always flatten. Players do not all think of that
+// button the same way, so it is not tied to the key unless asked.
+let accidentalMode = 0;
+
+function keyAlterations(){
+  const n = KEY_SIGS[keySig][2];
+  const alt = [0, 0, 0, 0, 0, 0, 0];
+  if (n > 0) for (let i = 0; i < n; i++) alt[i] = 1;        // F C G D A E B
+  else for (let i = 0; i < -n; i++) alt[6 - i] = -1;        // B E A D G C F
+  return alt;
+}
+
+// What the sharp/flat button does right now: +1, -1, or nothing.
+function modifierStep(){
+  if (!sharpOn) return 0;
+  if (accidentalMode === 1) return 1;
+  if (accidentalMode === 2) return -1;
+  return KEY_SIGS[keySig][2] < 0 ? -1 : 1;                  // follow the key
+}
+
+function accidentalText(a){
+  return a === 0 ? '' : a === 1 ? '\u266f' : a === 2 ? '\u00d7'
+       : a === -1 ? '\u266d' : a === -2 ? '\u266d\u266d' : '?';
+}
+
+// Column i's root: its letter plus whatever the key and the button say.
+function rootAlter(i){ return keyAlterations()[i] + modifierStep(); }
+function rootPc(i){ return ((ROOTS[i][1] + rootAlter(i)) % 12 + 12) % 12; }
+function rootName(i){ return ROOTS[i][0] + accidentalText(rootAlter(i)); }
+function rootMidi(i){ return ROOTS[i][1] + rootAlter(i); }
 const QUALITY = [
   { suffix: '',  name: 'Maj' },
   { suffix: 'm', name: 'Min' },
@@ -1862,7 +1915,6 @@ const HARP_MODES = [
 const DEGREE_NAMES = ['1','b2','2','b3','3','4','b5','5','b6','6','b7','7'];
 
 let harpMode = 0;
-let harpKey = 0;                       // 0 = C
 let customMask = 0b101010110101;       // a major scale to start from
 let strumHorizontal = false;
 let strumLayout = 'v';                 // v | h | grid
@@ -1879,7 +1931,7 @@ function harpKeyFor(){ return currentKey() || lastHarpKey; }
 function harpScaleFor(){
   const m = HARP_MODES[harpMode];
   const spec = chordSpec();
-  const chordRoot = (ROOTS[activeRoot][1] + (sharpOn ? 1 : 0)) % 12;
+  const chordRoot = rootPc(activeRoot);
 
   if (m.kind === 'chord'){
     // Fall back to the last chord so the harp keeps its strings once the
@@ -1890,7 +1942,7 @@ function harpScaleFor(){
     return { tones: sp.tones, root: chordRoot };
   }
   if (m.kind === 'key'){
-    return { tones: SCALES[m.scale], root: (harpKey + (m.offset || 0)) % 12 };
+    return { tones: SCALES[m.scale], root: (KEY_SIGS[keySig][1] + (m.offset || 0)) % 12 };
   }
   if (m.kind === 'perChord' || m.kind === 'perChordPent'){
     const key = harpKeyFor();
@@ -1905,7 +1957,7 @@ function harpScaleFor(){
   const tones = [];
   for (let i = 0; i < 12; i++) if (customMask & (1 << i)) tones.push(i);
   if (!tones.length) return null;
-  return { tones, root: m.kind === 'customKey' ? harpKey : chordRoot };
+  return { tones, root: m.kind === 'customKey' ? KEY_SIGS[keySig][1] : chordRoot };
 }
 
 let sharpOn = false, latchOn = false, barryOn = false, stackOn = false;
@@ -2014,7 +2066,7 @@ function voiceChord(tones, base){
 function chordFor(){
   const spec = chordSpec();
   if (!spec) return [];
-  return voiceChord(spec.tones, ROOTS[activeRoot][1] + (sharpOn ? 1 : 0) + chordOct * 12);
+  return voiceChord(spec.tones, rootMidi(activeRoot) + chordOct * 12);
 }
 
 // The harp: chord tones stacked upward until twelve sections are filled, so
@@ -2032,7 +2084,7 @@ function ladderFor(){
 
   // Start an octave below the chord so there is room to climb, aligned to the
   // scale's own root rather than the chord's.
-  const anchor = ROOTS[activeRoot][1] + (sharpOn ? 1 : 0) - 12 + strumOct * 12;
+  const anchor = rootMidi(activeRoot) - 12 + strumOct * 12;
   let base = Math.floor(anchor / 12) * 12 + sc.root;
   if (base > anchor) base -= 12;
 
@@ -2090,7 +2142,7 @@ function refreshChord(){
   chordNotes.forEach(n => playNote(n, 100, 0));
   updateStrum();
   const el = document.getElementById('chordName');
-  if (el) el.textContent = ROOTS[activeRoot][0] + (sharpOn ? '#' : '') + spec.suffix;
+  if (el) el.textContent = rootName(activeRoot) + spec.suffix;
   paintChords();
 }
 
@@ -2099,7 +2151,7 @@ function refreshChord(){
 function relabelChords(){
   document.querySelectorAll('.chordbtn').forEach(b => {
     const ri = b.dataset.root | 0, qi = b.dataset.q | 0;
-    b.textContent = ROOTS[ri][0] + (altLayout ? ALT_ROW_SUFFIX[qi] : QUALITY[qi].suffix);
+    b.textContent = rootName(ri) + (altLayout ? ALT_ROW_SUFFIX[qi] : QUALITY[qi].suffix);
   });
   const sw = document.getElementById('barrySw');
   if (sw) sw.style.opacity = altLayout ? '0.35' : '';   // no effect here
@@ -2313,6 +2365,7 @@ function buildPlaySurface(){
   sharpSw.onclick = () => {
     sharpOn = !sharpOn;
     sharpSw.classList.toggle('active', sharpOn);
+    relabelChords();
     revoice();
   };
   latchSw.onclick = () => {
@@ -2336,22 +2389,25 @@ function buildPlaySurface(){
   }
 
   const modeSel = document.getElementById('harpModeSel');
-  const keySel  = document.getElementById('harpKeySel');
+  const keySel  = document.getElementById('keySigSel');
   const degHost = document.getElementById('customDegrees');
 
   if (keySel){
-    NOTE_NAMES.forEach((nm, i) => {
+    KEY_SIGS.forEach((k, i) => {
+      const n = k[2];
       const o = document.createElement('option');
-      o.value = i; o.textContent = nm;
+      o.value = i;
+      o.textContent = k[0] + (n === 0 ? '' : '  ' + Math.abs(n) + (n > 0 ? '\u266f' : '\u266d'));
       keySel.appendChild(o);
     });
+    keySel.value = keySig;
   }
 
   function refreshHarp(){
     const kind = HARP_MODES[harpMode].kind;
     if (degHost) degHost.hidden = (kind !== 'customKey' && kind !== 'customChord');
-    if (keySel) keySel.parentElement.style.opacity =
-      (kind === 'key' || kind === 'customKey') ? '' : '0.35';
+    // The key is not only the harp's now -- it spells the whole matrix -- so
+    // it stays at full strength whatever the harp mode is.
     buildStrumSegments();
     if (currentKey() || kind === 'key' || kind === 'customKey') updateStrum();
   }
@@ -2370,11 +2426,38 @@ function buildPlaySurface(){
   }
   if (keySel){
     keySel.onchange = () => {
-      harpKey = keySel.value | 0;
-      try { localStorage.setItem('8b8.harpKey', harpKey); } catch(e){}
+      keySig = keySel.value | 0;
+      try { localStorage.setItem('8b8.keySig', keySig); } catch(e){}
+      relabelChords();
       refreshHarp();
+      if (currentKey()) refreshChord();
+      updateSharpLabel();
     };
   }
+
+  const accSel = document.getElementById('accModeSel');
+  if (accSel){
+    accSel.onchange = () => {
+      accidentalMode = accSel.value | 0;
+      try { localStorage.setItem('8b8.accMode', accidentalMode); } catch(e){}
+      relabelChords();
+      updateSharpLabel();
+      if (currentKey()) refreshChord();
+    };
+  }
+
+  // The button's own label follows what it will do, so it never says Sharp
+  // while flattening.
+  function updateSharpLabel(){
+    const lab = document.querySelector('#sharpSw');
+    if (!lab || !lab.parentElement) return;
+    const txt = lab.parentElement.querySelector('.cc-label');
+    if (!txt) return;
+    const flat = accidentalMode === 2 ||
+                 (accidentalMode === 0 && KEY_SIGS[keySig][2] < 0);
+    txt.textContent = flat ? 'Flat' : 'Sharp';
+  }
+  updateSharpLabel();
 
   if (degHost){
     DEGREE_NAMES.forEach((nm, i) => {
@@ -2402,11 +2485,13 @@ function buildPlaySurface(){
 
   try {
     const hm = localStorage.getItem('8b8.harpMode');
-    const hk = localStorage.getItem('8b8.harpKey');
+    const hk = localStorage.getItem('8b8.keySig');
+    const am = localStorage.getItem('8b8.accMode');
+    if (am !== null){ accidentalMode = am | 0; const a = document.getElementById('accModeSel'); if (a) a.value = am; }
     const cm = localStorage.getItem('8b8.customMask');
     if (cm !== null) customMask = parseInt(cm, 10) || customMask;
     if (hm !== null && modeSel){ harpMode = hm | 0; modeSel.value = hm; }
-    if (hk !== null && keySel){ harpKey = hk | 0; keySel.value = hk; }
+    if (hk !== null && keySel){ keySig = hk | 0; keySel.value = hk; }
   } catch(e){}
   if (degHost){
     degHost.querySelectorAll('.deg').forEach((d, i) => d.classList.toggle('on', !!((customMask >> i) & 1)));
@@ -2562,7 +2647,16 @@ function buildKeyboard(){
 }
 
 const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-function noteName(n){ return NOTE_NAMES[n % 12] + (Math.floor(n / 12) - 1); }
+const NOTE_NAMES_FLAT = ['C','D\u266d','D','E\u266d','E','F','G\u266d','G','A\u266d','A','B\u266d','B'];
+
+// Labels follow the key's accidental, so a strumpad in E flat reads B flat
+// rather than A sharp. This is a spelling of pitch CLASSES, not true note
+// spelling -- it will never give you an E sharp or an F flat, which needs
+// the note's letter to be tracked rather than deduced.
+function noteName(n){
+  const flat = KEY_SIGS[keySig][2] < 0;
+  return (flat ? NOTE_NAMES_FLAT : NOTE_NAMES)[n % 12] + (Math.floor(n / 12) - 1);
+}
 
 // Applied when a key is struck rather than baked into the elements, so the
 // octave can change with notes held without stranding them.
