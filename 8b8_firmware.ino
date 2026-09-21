@@ -430,12 +430,17 @@ public:
     r[MIXER] = (r[MIXER] | mask) ^ (bits << sub);
   }
 
-  // Pitch without touching the amplitude, for a channel something else owns.
+  // Pitch only, for a channel something else owns the amplitude of. Also
+  // re-asserts tone and noise OFF in the CACHE every tick. Doing it with a
+  // raw writeReg left the cache still saying "tone enabled", so any
+  // invalidate() -- which every parameter change causes -- rewrote the
+  // mixer from the cache and the square came back underneath.
   void setTonePitchOnly(ushort ch, ushort divisor) {
     uint8_t chip = ch % 3, sub = ch / 3;
     unsigned char *r = regs[chip];
     r[TONEALOW  + (sub << 1)] = divisor & 0xFF;
     r[TONEAHIGH + (sub << 1)] = (divisor >> 8) & 0x0F;
+    r[MIXER] |= (uint8_t)((1u << sub) | (8u << sub));
   }
 
   void setEnvelope(ushort ch, ushort divisor, ushort shape) {
@@ -1167,7 +1172,7 @@ static volatile uint16_t waveStep  = 0;     // phase units per ISR tick
 static volatile uint8_t  waveChip  = 0xFF;  // 0xFF = not running
 static volatile uint8_t  waveReg   = 0;
 static volatile uint8_t  waveTable = 0;
-static volatile uint8_t  waveLevel = 15;
+static volatile uint8_t  waveGain  = 16;    // 0..16: Level times the ADSR
 static uint8_t waveVoice = NO_VOICE;   // which voice the ISR has taken over
 static void applyWavetable();          // noteOn calls this before it is defined
 
@@ -1178,7 +1183,11 @@ static inline void waveTick() {
   wavePhase += waveStep;
   uint8_t idx = (uint8_t)(wavePhase >> 10) & (WAVE_LEN - 1);
   uint8_t v = pgm_read_byte(&WAVE_TABLES[waveTable][idx]);
-  if (waveLevel < 15) v = (uint8_t)(((uint16_t)v * waveLevel) / 15u);
+  // Scale by the voice's current envelope. Without this the waveform played
+  // flat out until the note ended while every other voice breathed, which is
+  // why a square voice alongside it sounded like the one with the envelope.
+  // A multiply and a shift; no divide, this is an interrupt.
+  v = (uint8_t)(((uint16_t)v * waveGain) >> 4);
   writeReg(waveChip, waveReg, v);
 }
 
@@ -1582,11 +1591,8 @@ static void applyWavetable() {
 
   const uint8_t chip = (uint8_t)(target % 3), sub = (uint8_t)(target / 3);
 
-  // Tone and noise off: the amplitude register is then the only thing
-  // reaching the output on this channel.
-  uint8_t m = psg.regs[chip][PSGRegs::MIXER];
-  m |= (uint8_t)((1u << sub) | (8u << sub));
-  writeReg(chip, PSGRegs::MIXER, m);
+  // Tone and noise off, through the cache so it survives an invalidate.
+  psg.regs[chip][PSGRegs::MIXER] |= (uint8_t)((1u << sub) | (8u << sub));
 
   // Phase step: at WAVE_HZ, a table of WAVE_LEN entries with a 10-bit
   // fractional phase steps by (freq * 65536 / WAVE_HZ). The note's frequency
@@ -1600,7 +1606,15 @@ static void applyWavetable() {
   if (step > 65535UL) step = 65535UL;
 
   waveTable = (uint8_t)(params[P_WAVE_SHAPE] % WAVE_COUNT);
-  waveLevel = params[P_WAVE_LEVEL];
+  // Level and the envelope fold into one 0..16 gain, worked out here at
+  // 100Hz rather than in the interrupt.
+  {
+    int amp = voices[target].m_ampl >> 6;          // 0..15
+    if (amp < 0) amp = 0;
+    if (amp > 15) amp = 15;
+    uint16_t g = ((uint16_t)params[P_WAVE_LEVEL] * (uint16_t)amp * 16u) / 225u;
+    waveGain = (uint8_t)(g > 16 ? 16 : g);
+  }
   waveReg   = (uint8_t)(PSGRegs::TONEAAMPL + sub);
   waveStep  = (uint16_t)step;
   waveChip  = chip;
