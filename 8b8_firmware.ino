@@ -415,14 +415,21 @@ public:
     r[MIXER] = (r[MIXER] | mask) ^ (1 << sub);
   }
 
-  void setToneAndNoise(ushort ch, ushort divisor, ushort noisefreq, ushort ampl) {
+  // keepNoise leaves the chip's noise period as it is. The generator is one
+  // per chip, so writing it changes the colour of any noise drum already
+  // decaying there: a hat at period 0 landing on a ringing snare at 6 turns
+  // the snare's hiss bright halfway through. The arriving hit takes the
+  // period that is there instead, which is a small error on a transient
+  // rather than an audible change in a sustaining sound.
+  void setToneAndNoise(ushort ch, ushort divisor, ushort noisefreq, ushort ampl,
+                       bool keepNoise = false) {
     uint8_t chip = ch % 3;
     uint8_t sub  = ch / 3;
     unsigned char *r = regs[chip];
 
     r[TONEALOW  + (sub<<1)] = (divisor & 0xFF);
     r[TONEAHIGH + (sub<<1)] = (divisor >> 8);
-    r[NOISEGEN] = noisefreq;
+    if (!keepNoise) r[NOISEGEN] = noisefreq;
     r[TONEAAMPL + sub] = ampl;
 
     ushort mask = (8+1) << sub;
@@ -645,6 +652,7 @@ public:
   ushort m_adsr;
   uint8_t m_partner;      // the unison twin's voice number, or NO_VOICE
   bool m_softEnv;         // decay in software; the chip's envelope is taken
+  bool m_keepNoise;       // another noise drum is ringing here; leave its period
   uint8_t m_envAcc;       // 1/16ths carried between ticks
 
   // Rates are in 1/16ths of an amplitude unit per tick, so a four second
@@ -745,9 +753,10 @@ public:
 
   struct FXParams m_fxp;
   
-  void startFX(const struct FXParams &fxp, bool softEnv = false) {
+  void startFX(const struct FXParams &fxp, bool softEnv = false, bool keepNoise = false) {
     m_fxp = fxp;
     m_softEnv = softEnv;
+    m_keepNoise = keepNoise;
     m_age = 0;        // percussion is age-ranked for stealing too
   
     if (m_ampl > 0) {
@@ -781,7 +790,8 @@ public:
 #endif
     // Amplitude 30 sets the M bit, pointing the channel at the envelope.
     // A software-envelope drum takes its level from m_ampl each tick instead.
-    psg.setToneAndNoise(m_chan, fxp.tonefreq, fxp.noisefreq, m_softEnv ? 15 : 30);
+    psg.setToneAndNoise(m_chan, fxp.tonefreq, fxp.noisefreq,
+                        m_softEnv ? 15 : 30, m_keepNoise);
   }
   
 
@@ -867,7 +877,8 @@ public:
             uint16_t n = m_fxp.noisefreq + m_fxp.freqdecay;
             m_fxp.noisefreq = (uint8_t)(n > 15 ? 15 : n);
           }
-          psg.setToneAndNoise(m_chan, m_fxp.tonefreq, m_fxp.noisefreq, 30);
+          psg.setToneAndNoise(m_chan, m_fxp.tonefreq, m_fxp.noisefreq,
+                              m_softEnv ? (m_ampl >> 6) : 30, m_keepNoise);
         }
         
         m_ampl -= m_decay;
@@ -1031,6 +1042,31 @@ static int8_t freeEnvelopeChip() {
     if (m_playing[i] == PERC_NOTE && voices[i].isPlaying()) used[i % 3] = true;
   }
   for (uint8_t c = 0; c < 3; c++) if (!used[c]) return (int8_t)c;
+  return -1;
+}
+
+// The noise period ringing on a chip, or 16 if no noise drum is sounding
+// there. Both the envelope and the noise generator are one per chip, so a
+// drum can disturb a neighbour two ways; this covers the second.
+static uint8_t chipNoise(uint8_t chip) {
+  for (uint8_t i = chip; i < MAX_VOICES; i += 3) {
+    if (m_playing[i] == PERC_NOTE && voices[i].isPlaying()
+        && voices[i].m_fxp.noisefreq < 16) {
+      return voices[i].m_fxp.noisefreq;
+    }
+  }
+  return 16;
+}
+
+// Where to put a drum that cannot have a chip to itself. A chip already at
+// the period this drum wants costs nothing to join; failing that, one with no
+// noise drum on it at all. Returns -1 when every chip is running noise at a
+// different period, and the caller keeps whatever is there.
+static int8_t quietestNoiseChip(uint8_t want) {
+  if (want < 16) {
+    for (uint8_t c = 0; c < 3; c++) if (chipNoise(c) == want) return (int8_t)c;
+  }
+  for (uint8_t c = 0; c < 3; c++) if (chipNoise(c) == 16) return (int8_t)c;
   return -1;
 }
 
@@ -1347,13 +1383,16 @@ static bool startPercussion(note_t note) {
 
   // Prefer a chip whose envelope generator is idle, so this hit does not cut
   // short a drum already sounding on the same chip.
-  const int8_t chip = freeEnvelopeChip();
-  uint8_t v = claimVoice(chip);
-  if (v == NO_VOICE) return false;
-
   FXParams fxp;
   memcpy_P(&fxp, &perc_params[note - PERC_MIN], sizeof(FXParams));
   applyDrumMods(fxp);
+
+  // A chip with a free envelope is best. Otherwise take one where the noise
+  // period already matches, so sharing costs nothing.
+  const int8_t chip = freeEnvelopeChip();
+  const int8_t want = (chip >= 0) ? chip : quietestNoiseChip(fxp.noisefreq);
+  uint8_t v = claimVoice(want);
+  if (v == NO_VOICE) return false;
   // One envelope generator per chip, shared by its three channels. A drum
   // landing on a chip whose envelope is already running would overwrite the
   // period and restart it, cutting the drum that was there. Hats show this
@@ -1361,7 +1400,10 @@ static bool startPercussion(note_t note) {
   // the kit, so a hat on a ringing crash drops 2500 to 300 and truncates it
   // eightfold. When no chip is free the new drum decays in software instead,
   // which is coarser but disturbs nothing.
-  voices[v].startFX(fxp, chip < 0);
+  const uint8_t landed = (uint8_t)(v % 3);
+  const uint8_t ringing = chipNoise(landed);
+  voices[v].startFX(fxp, chip < 0,
+                    fxp.noisefreq < 16 && ringing < 16 && ringing != fxp.noisefreq);
   m_playing[v] = PERC_NOTE;
 
   if (params[P_DRUM_FLAM] > 0 && !flamFiring) {

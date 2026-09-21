@@ -447,8 +447,11 @@
   /* ---- Sequencer ---- */
   .seq{ padding:0 13px 13px; overflow-x:auto; }
   .seqrow{ display:flex; align-items:center; gap:3px; margin-bottom:3px; }
+  .seqname select{
+    width:100%; font-size:calc(9px * var(--ui-scale)); padding:2px 1px;
+  }
   .seqname{
-    flex:0 0 72px; font-family:var(--pixel);
+    flex:0 0 86px; font-family:var(--pixel);
     font-size:calc(6px * var(--ui-scale)); color:var(--text-dim);
     cursor:pointer; padding:4px 0;
   }
@@ -2653,6 +2656,21 @@ function buildMidiFile(){
 // way a plain setInterval does.
 const SEQ_STEPS = 64;          // four pages of sixteen
 const SEQ_PAGE = 16;
+// Every drum the firmware has. A row can be pointed at any of them, so the
+// eight rows are a working set rather than a fixed kit: the alternative, a
+// second page of rows, would hide half a pattern behind a switch.
+const DRUM_KIT = [
+  [35, 'Acoustic kick'], [36, 'Kick'],        [37, 'Side stick'],
+  [38, 'Snare'],         [39, 'Hand clap'],   [40, 'Elec snare'],
+  [41, 'Low floor tom'], [42, 'Closed hat'],  [43, 'Hi floor tom'],
+  [44, 'Pedal hat'],     [45, 'Low tom'],     [46, 'Open hat'],
+  [47, 'Low-mid tom'],   [48, 'Hi-mid tom'],  [49, 'Crash 1'],
+  [50, 'High tom'],      [51, 'Ride 1'],      [52, 'Chinese'],
+  [53, 'Ride bell'],     [54, 'Tambourine'],  [55, 'Splash'],
+  [56, 'Cowbell'],       [57, 'Crash 2'],     [58, 'Vibraslap'],
+  [59, 'Ride 2']
+];
+
 const SEQ_ROWS = [
   { name: 'Kick',   note: 36 },
   { name: 'Snare',  note: 38 },
@@ -2692,6 +2710,14 @@ let seqLastPainted = -1;
 
 // Rows are handed to the engine as a 16-bit mask each, which is all the
 // timing side needs to know about the pattern.
+// Which drum each row currently plays. Patterns stay with the row, so
+// repointing a row auditions the same rhythm on a different drum.
+let drumAssign = SEQ_ROWS.map(r => r.note);
+try {
+  const saved = JSON.parse(localStorage.getItem('8b8.drumAssign') || 'null');
+  if (Array.isArray(saved) && saved.length === SEQ_ROWS.length) drumAssign = saved;
+} catch(e){}
+
 function cellsOf(grid, ri){
   const cells = [];
   for (let s = 0; s < SEQ_STEPS; s++) if (grid[ri][s]) cells.push([s, grid[ri][s]]);
@@ -2699,7 +2725,7 @@ function cellsOf(grid, ri){
 }
 
 function seqRowsForEngine(){
-  const rows = SEQ_ROWS.map((r, ri) => ({ note: r.note, chan: 9, cells: cellsOf(seqGrid, ri) }));
+  const rows = SEQ_ROWS.map((r, ri) => ({ note: drumAssign[ri], chan: 9, cells: cellsOf(seqGrid, ri) }));
   // Pitch rows follow, on channel 0, so they run through the melodic voices
   // and are released rather than being one-shots like the drums.
   NOTE_SEMIS.forEach((semi, ri) =>
@@ -2822,15 +2848,28 @@ function buildSequencer(){
     const row = document.createElement('div');
     row.className = 'seqrow';
     const nm = document.createElement('div');
-    nm.className = 'seqname'; nm.textContent = r.name;
-    nm.onclick = () => playNote(r.note, 110, 9);       // audition
+    nm.className = 'seqname';
+    const pick = document.createElement('select');
+    DRUM_KIT.forEach(([note, label]) => {
+      const o = document.createElement('option');
+      o.value = note; o.textContent = label;
+      pick.appendChild(o);
+    });
+    pick.value = String(drumAssign[ri]);
+    pick.onchange = () => {
+      drumAssign[ri] = pick.value | 0;
+      try { localStorage.setItem('8b8.drumAssign', JSON.stringify(drumAssign)); } catch(e){}
+      playNote(drumAssign[ri], 110, 9);                // audition the new one
+      seqEnginePattern(seqRowsForEngine());
+    };
+    nm.appendChild(pick);
     row.appendChild(nm);
     seqCells[ri] = [];
     for (let si = 0; si < SEQ_PAGE; si++){
       const c = document.createElement('div');
       c.className = 'step';
       c.dataset.r = ri; c.dataset.s = si;
-      attachCell(c, seqGrid, seqCells, ri, si, () => playNote(r.note, 110, 9));
+      attachCell(c, seqGrid, seqCells, ri, si, () => playNote(drumAssign[ri], 110, 9));
       seqCells[ri][si] = c;
       row.appendChild(c);
     }
@@ -3046,6 +3085,8 @@ function loadPattern(name){
   const p = SEQ_PATTERNS[name] || {};
   const base = seqPage * SEQ_PAGE;
   SEQ_ROWS.forEach((r, ri) => {
+    // Patterns name the default row, not the drum, so a preset still lands
+    // in the right place after a row has been repointed.
     const on = p[r.name] || [];
     for (let s = 0; s < SEQ_PAGE; s++) seqGrid[ri][base + s] = 0;
     on.forEach(i => { if (i < SEQ_PAGE) seqGrid[ri][base + i] = 1; });
