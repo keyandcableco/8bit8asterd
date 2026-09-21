@@ -430,6 +430,14 @@ public:
     r[MIXER] = (r[MIXER] | mask) ^ (bits << sub);
   }
 
+  // Pitch without touching the amplitude, for a channel something else owns.
+  void setTonePitchOnly(ushort ch, ushort divisor) {
+    uint8_t chip = ch % 3, sub = ch / 3;
+    unsigned char *r = regs[chip];
+    r[TONEALOW  + (sub << 1)] = divisor & 0xFF;
+    r[TONEAHIGH + (sub << 1)] = (divisor >> 8) & 0x0F;
+  }
+
   void setEnvelope(ushort ch, ushort divisor, ushort shape) {
     uint8_t chip = ch % 3;
     unsigned char *r = regs[chip];
@@ -1160,6 +1168,8 @@ static volatile uint8_t  waveChip  = 0xFF;  // 0xFF = not running
 static volatile uint8_t  waveReg   = 0;
 static volatile uint8_t  waveTable = 0;
 static volatile uint8_t  waveLevel = 15;
+static uint8_t waveVoice = NO_VOICE;   // which voice the ISR has taken over
+static void applyWavetable();          // noteOn calls this before it is defined
 
 // One ISR tick: advance the phase, look up the sample, push it at the chip.
 // Deliberately small -- no arithmetic beyond an add and a shift.
@@ -1467,6 +1477,11 @@ static void noteOn(midictrl_t chan, note_t note, midictrl_t vel) {
   updateRequestedNotes();
     
   startNote(idx);   // claimVoice() handles stealing internally
+
+  // Hand the note to the wavetable straight away. Waiting for the next
+  // 100Hz tick delayed the start of every wavetable note by up to 10ms,
+  // which reads as the voice lagging behind the keyboard.
+  if (params[P_WAVE_ENABLE]) applyWavetable();
 }
   
   
@@ -1558,6 +1573,7 @@ static void applyWavetable() {
       waveTimerRun(false);
       uint8_t c = waveChip, r = waveReg;
       waveChip = 0xFF;
+      waveVoice = NO_VOICE;
       writeReg(c, r, 0);            // leave the channel silent, not stuck
       psg.invalidate();             // and let the cache rewrite it properly
     }
@@ -1588,6 +1604,7 @@ static void applyWavetable() {
   waveReg   = (uint8_t)(PSGRegs::TONEAAMPL + sub);
   waveStep  = (uint16_t)step;
   waveChip  = chip;
+  waveVoice = (uint8_t)target;
   waveTimerRun(true);
 }
 
@@ -2264,7 +2281,13 @@ static void update100Hz() {
       // the noise period register is per-chip and shared with percussion
       // -- a drum and a noise-blended voice on the same chip fight over
       // it, last writer wins. Chip-level quirk, documented behaviour.
-      if (params[P_NOISE_ENABLE]) {
+      if (i == waveVoice) {
+        // The wavetable ISR writes this channel's amplitude sixteen thousand
+        // times a second. Writing it from here too put a step in the waveform
+        // on every tick, a hundred times a second. The ADSR still runs above
+        // -- it is what ends the note -- but only the pitch is written.
+        psg.setTonePitchOnly(i, p);
+      } else if (params[P_NOISE_ENABLE]) {
         psg.setToneAndNoise(i, p, params[P_NOISE_PERIOD], a);
       } else {
         psg.setTone(i, p, a);
