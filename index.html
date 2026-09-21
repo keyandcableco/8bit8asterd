@@ -2649,6 +2649,26 @@ function buildMidiFile(){
 
   btn.onclick = () => { midiPlaying ? midiStop() : midiPlay(); };
 
+  // Start with the bundled piece loaded, so the player can be pressed without
+  // finding a file first. Any file the user picks replaces it.
+  const demo = 'TVRoZAAAAAYAAQAEAeBNVHJrAAAACwD/UQMJiWgA/y8ATVRyawAAAUgAkEhkgXCASAAAkExkgXCATAAAkE9kgXCATwAAkExkgXCATAAAkFFkgXCAUQAAkE9kgXCATwAAkExkgXCATAAAkEhkgXCASAAAkFRkgXCAVAAAkFNkgXCAUwAAkE9kgXCATwAAkFFkgXCAUQAAkE1kgXCATQAAkExkgXCATAAAkEpkgXCASgAAkEhkgXCASAAAkEpkgXCASgAAkE5kgXCATgAAkFFkgXCAUQAAkE5kgXCATgAAkFNkgXCAUwAAkFFkgXCAUQAAkE5kgXCATgAAkEpkgXCASgAAkFNkgXCAUwAAkFJkgXCAUgAAkE5kgXCATgAAkFBkgXCAUAAAkExkgXCATAAAkEtkgXCASwAAkElkgXCASQAAkEdkgXCARwAAkEhkg2CASAAAkExkg2CATAAAkE9kg2CATwAAkExkg2CATAAA/y8ATVRyawAAAQGPAJBBWIFwgEEAAJBFWIFwgEUAAJBIWIFwgEgAAJBFWIFwgEUAAJBKWIFwgEoAAJBIWIFwgEgAAJBFWIFwgEUAAJBBWIFwgEEAAJBPWIFwgE8AAJBOWIFwgE4AAJBKWIFwgEoAAJBMWIFwgEwAAJBIWIFwgEgAAJBHWIFwgEcAAJBFWIFwgEUAAJBDWIFwgEMAAJBAWIFwgEAAAJBEWIFwgEQAAJBHWIFwgEcAAJBEWIFwgEQAAJBJWIFwgEkAAJBHWIFwgEcAAJBEWIFwgEQAAJBAWIFwgEAAAJA8WINggDwAAJBAWINggEAAAJBDWINggEMAAJBAWINggEAAAP8vAE1UcmsAAABVAJAwTocsgDAAFJA3TocsgDcAFJA1TocsgDUAFJA3TocsgDcAFJAwTocsgDAAFJA5TocsgDkAFJA3TocsgDcAFJAwTocsgDAAFJAwTo8AgDAAAP8vAA==';
+  if (demo){
+    try {
+      const raw = atob(demo);
+      const buf = new ArrayBuffer(raw.length);
+      const view = new Uint8Array(buf);
+      for (let i = 0; i < raw.length; i++) view[i] = raw.charCodeAt(i);
+      midiFile = parseMidiFile(buf);
+      const nameEl = document.getElementById('midiFileName');
+      if (nameEl) nameEl.textContent = 'invention.mid';
+      midiStatus('invention.mid (included): ' + midiFile.events.length + ' notes, ' +
+                 midiFile.duration.toFixed(1) + 's, ' + midiFile.bpm + ' BPM. ' +
+                 'Press Play File, or choose your own.');
+    } catch (err){
+      midiFile = null;
+    }
+  }
+
   const spd = document.getElementById('midiSpeed');
   const spdVal = document.getElementById('midiSpeedVal');
   if (spd) spd.oninput = () => {

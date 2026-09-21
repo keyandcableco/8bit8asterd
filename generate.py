@@ -3041,6 +3041,26 @@ function buildMidiFile(){
 
   btn.onclick = () => { midiPlaying ? midiStop() : midiPlay(); };
 
+  // Start with the bundled piece loaded, so the player can be pressed without
+  // finding a file first. Any file the user picks replaces it.
+  const demo = '__DEMO_MIDI__';
+  if (demo){
+    try {
+      const raw = atob(demo);
+      const buf = new ArrayBuffer(raw.length);
+      const view = new Uint8Array(buf);
+      for (let i = 0; i < raw.length; i++) view[i] = raw.charCodeAt(i);
+      midiFile = parseMidiFile(buf);
+      const nameEl = document.getElementById('midiFileName');
+      if (nameEl) nameEl.textContent = 'invention.mid';
+      midiStatus('invention.mid (included): ' + midiFile.events.length + ' notes, ' +
+                 midiFile.duration.toFixed(1) + 's, ' + midiFile.bpm + ' BPM. ' +
+                 'Press Play File, or choose your own.');
+    } catch (err){
+      midiFile = null;
+    }
+  }
+
   const spd = document.getElementById('midiSpeed');
   const spdVal = document.getElementById('midiSpeedVal');
   if (spd) spd.oninput = () => {
@@ -3953,6 +3973,23 @@ SERIAL_INTRO = 'A control surface for the 8-Bit 8asterd: nine voices of chiptune
 WASM_INTRO = 'The 8-Bit 8asterd, running in your browser. Nine voices of chiptune across three emulated AY-3-8910 chips, with effects built out of what those chips do when you push them past their limits &mdash; the crushing and glitching is the hardware straining, not something added on top. This runs the real firmware compiled to WebAssembly, the same code that is on the physical unit. Press <b>Start Audio</b>, then play it from the chord matrix, the keyboard, the sequencer or a game controller.'
 
 
+def demo_midi_b64():
+    """The bundled demo piece, base64 inlined.
+
+    Inlined rather than fetched so the panel stays a single self-contained
+    file that works from file:// with nothing beside it, as the logo does.
+    It is under a kilobyte. Absent, the player simply starts with no file.
+    """
+    import base64, os
+    f = os.path.join(os.path.dirname(os.path.abspath(__file__)), "demo", "invention.mid")
+    if not os.path.exists(f):
+        return ""
+    with open(f, "rb") as fh:
+        b = base64.b64encode(fh.read()).decode("ascii")
+    print(f"  demo: inlined invention.mid ({len(b)} chars base64)")
+    return b
+
+
 def brand_markup():
     """The header brand line, with the logo inlined if one is present.
 
@@ -3999,7 +4036,8 @@ def emit_html(path, transport="serial", extra_head="", extra_body=""):
             .replace("__INTRO__", SERIAL_INTRO if transport == "serial" else WASM_INTRO)
             .replace("__SITE_URL__", SITE_URL)
             .replace("__SITE_TITLE__", SITE_TITLE)
-            .replace("__SITE_DESC__", SITE_DESC))
+            .replace("__SITE_DESC__", SITE_DESC)
+            .replace("__DEMO_MIDI__", demo_midi_b64()))
     with open(path, "w") as f:
         f.write(html)
     print(f"wrote {path}  ({len(PRESETS)} presets)")
