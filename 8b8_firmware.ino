@@ -1087,6 +1087,52 @@ static bool startNote(ushort idx) {
 // RAM copy pulled out of PROGMEM, so the built-in kit table is untouched and
 // the modifiers reshape every drum consistently.
 // Shared by Drum FX Chaos and by the Warp Zone Scramble mode.
+// ---------------------------------------------------------------------------
+// Free RAM, measured rather than guessed
+// ---------------------------------------------------------------------------
+// The gap between the end of the globals and the stack is painted with a
+// known byte at startup. Whatever the stack touches gets overwritten, so
+// counting the bytes still holding that value afterwards gives the closest
+// the stack has EVER come to the globals -- the number that actually
+// matters. A stack overflow on AVR does not fault; it quietly corrupts
+// globals and shows up as inexplicable misbehaviour, so this is worth
+// knowing rather than inferring from the compiler's static figure.
+#define RAM_CANARY 0xC5
+
+#ifdef __AVR__
+extern unsigned int __bss_end;
+extern void *__brkval;
+
+static uint8_t *ramFloor() {
+  return __brkval ? (uint8_t *)__brkval : (uint8_t *)&__bss_end;
+}
+
+static void paintFreeRam() {
+  uint8_t here;
+  uint8_t *p = ramFloor();
+  uint8_t *sp = &here;
+  // Stop short of our own frame, or this would scribble on its own locals.
+  while (p < sp - 16) *p++ = RAM_CANARY;
+}
+
+static int freeRamNow() {
+  uint8_t here;
+  return (int)(&here - ramFloor());
+}
+
+static int freeRamLow() {
+  uint8_t *p = ramFloor();
+  int n = 0;
+  while (*p == RAM_CANARY) { p++; n++; }
+  return n;
+}
+#else
+// The emulator has a host stack; the figures would be meaningless there.
+static void paintFreeRam() {}
+static int  freeRamNow() { return -1; }
+static int  freeRamLow() { return -1; }
+#endif
+
 static uint16_t warpRngState = 0xACE1;
 
 // Depth is a magnitude, 1..63, and every mode should respond to it evenly.
@@ -1863,6 +1909,12 @@ static void handleCommand(char *cmd) {
   else if (strcmp(cmd, "DIAG") == 0) {
     // Voice map: index:chip/what/stage/age-in-ticks. This is what to read
     // when notes choke -- it shows crowding and which chip drums landed on.
+    // Free RAM first: now, and the worst it has ever been.
+    Serial.print(F("RAM:"));
+    Serial.print(freeRamNow());
+    Serial.print(':');
+    Serial.println(freeRamLow());
+
     Serial.print(F("DIAG "));
     for (uint8_t i = 0; i < MAX_VOICES; i++) {
       uint8_t idx = m_playing[i];
@@ -2123,6 +2175,10 @@ static unsigned long lastUpdate = 0;
 static unsigned long lastWarpUs = 0;
 
 void setup() {
+  // Paint the free RAM before anything has had a chance to use much stack,
+  // so the high-water reading covers the whole run.
+  paintFreeRam();
+
   // Hold in reset while we set up the reset
   pinMode(nRESET, OUTPUT);
   digitalWrite(nRESET, LOW);

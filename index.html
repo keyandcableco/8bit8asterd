@@ -1071,6 +1071,19 @@ function handleLine(line){
       log('err', 'LAYOUT MISMATCH \u2014 the flashed firmware is not this version.');
     }
   }
+  else if (line.startsWith('RAM:')){
+    // free-now : closest-the-stack-has-ever-come, both in bytes
+    const [, now, low] = line.split(':');
+    const n = parseInt(now, 10), l = parseInt(low, 10);
+    if (isNaN(n) || n < 0){
+      log('sys', 'RAM: not measured (emulator uses the host stack)');
+    } else {
+      const verdict = l < 128 ? '  <-- TIGHT, stack has come close'
+                    : l < 256 ? '  (getting close)' : '  (comfortable)';
+      log(l < 128 ? 'err' : 'sys',
+          'RAM free now ' + n + ' bytes, closest ever ' + l + verdict);
+    }
+  }
   else if (line.startsWith('DIAG')){
     log('rx','\u00ab ' + line);
   }
