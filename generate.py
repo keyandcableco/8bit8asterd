@@ -75,8 +75,7 @@ PARAMS = [
     # normal voice updates keep fighting them -- that fight is the sound.
     dict(key="warp_mode", label="Mode", group="Warp Zone", kind="enum",
          options=["Off", "Sync Buzz", "Stutter", "Scramble", "Zap",
-                  "Tape Stop", "Siren", "Crush", "Ring", "Env Crush",
-                  "Clock Warp"],
+                  "Tape Stop", "Siren", "Crush", "Ring", "Env Crush"],
          default=0,
          help="Sync Buzz restarts the envelope. Stutter gates the mixer. "
               "Scramble throws junk at registers. Zap sweeps noise. The "
@@ -91,6 +90,27 @@ PARAMS = [
     dict(key="warp_depth", label="Depth", group="Warp Zone", kind="int",
          min=1, max=63, default=20,
          help="How violent the effect is."),
+    dict(key="clock_enable", label="Enable", group="Clock Warp", kind="toggle",
+         default=0,
+         help="Wobbles the AY master clock, which the Leonardo generates, so "
+              "it sits upstream of all three chips: pitch, noise colour, "
+              "envelope rates and drum decays move together. It touches no "
+              "chip register, so it runs alongside any Warp Zone mode."),
+    dict(key="clock_drop", label="Drop", group="Clock Warp", kind="int",
+         min=0, max=63, default=30,
+         help="How far the clock falls. Around 45 matches the halving a "
+              "YM2149 gives with its SEL pin low; full reaches 380kHz, below "
+              "anything a hardware switch does."),
+    dict(key="clock_sweep", label="Sweep", group="Clock Warp", kind="int",
+         min=1, max=120, default=20,
+         help="How fast the clock wanders. Only audible while Hold is below "
+              "maximum, since a held clock does not sweep."),
+    dict(key="clock_hold", label="Hold", group="Clock Warp", kind="int",
+         min=0, max=63, default=0,
+         help="Mixes between sweeping and sitting at the bottom of the "
+              "sweep. Full is a clock-halving switch held down, which is "
+              "where the coarse, slow character lives."),
+
     dict(key="warp_motion", label="Motion", group="Warp Zone", kind="int",
          min=0, max=64, default=0,
          help="Sweeps Rate up and down on its own, hands free. The sweep "
@@ -365,7 +385,7 @@ SECTIONS = [
                "their own values, so the two fight \u2014 and because drums "
                "run on the envelope generator and tones do not, the same "
                "setting lands very differently on each.",
-         groups=["Warp Zone"]),
+         groups=["Warp Zone", "Clock Warp"]),
 ]
 
 # ---------------------------------------------------------------------------
@@ -2256,8 +2276,7 @@ const WARP_LABELS = [
   ['Siren speed', 'Range', 'Drift'],            // Siren
   ['Crush rate', 'Bits', 'Drift'],              // Crush
   ['Ring freq', 'Amount', 'Drift'],             // Ring
-  ['Crush rate', 'Bits', 'Drift'],              // Env Crush
-  ['Sweep speed', 'Clock drop', 'Hold']         // Clock Warp
+  ['Crush rate', 'Bits', 'Drift']               // Env Crush
 ];
 
 // Parameter controls carry no id, so the three are found once by their

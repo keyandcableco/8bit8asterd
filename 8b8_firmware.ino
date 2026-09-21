@@ -1253,6 +1253,7 @@ static void waveTimerInit() {}
 static inline void waveTimerRun(bool) {}
 #endif
 
+static uint8_t  clockRamp = 0;      // Clock Warp sweeps on its own phase
 static uint16_t warpRngState = 0xACE1;
 
 // Depth is a magnitude, 1..63, and every mode should respond to it evenly.
@@ -1596,8 +1597,8 @@ static void recalcDerived() {
   if (warpIntervalUs < 250UL) warpIntervalUs = 250UL;
 
   // Clock Warp leaves the master clock wherever it stopped, so put it back
-  // whenever that mode is not the one running.
-  if (params[P_WARP_MODE] != 10) {
+  // whenever it is switched off.
+  if (!params[P_CLOCK_ENABLE]) {
     uint8_t sreg = SREG;
     cli();
     OCR1AH = 0;
@@ -1784,7 +1785,46 @@ static uint16_t warpRamp = 0;        // slow sawtooth for the motion modes
 static uint16_t warpMotionPhase = 0;
 #define WARP_MOTION_SCALE 20
 
+// Clock Warp, on its own rather than as a Warp Zone mode. It writes no chip
+// register at all -- only OCR1A, the timer generating the AY master clock --
+// so nothing downstream can contend with it and it runs alongside whichever
+// mode is selected. Everything moves together: pitch, noise colour, envelope
+// rates and drum decays.
+static void clockWarpTick() {
+  if (!params[P_CLOCK_ENABLE]) return;
+
+  // Drop reaches thirteen divisor steps, so the clock can fall to 380kHz. A
+  // YM2149 with its SEL pin low runs at 500kHz, the halving a hardware clock
+  // switch gives, and this reaches past it.
+  const uint8_t amt = warpScale(params[P_CLOCK_DROP], 13);
+  // Hold mixes between sweeping the clock and sitting at the bottom of the
+  // sweep. At its top the clock is simply held down, as a halving switch
+  // holds it; a sine only visits its extreme for an instant, and the held
+  // sound is where the coarseness is.
+  const uint8_t hold = params[P_CLOCK_HOLD] > 63 ? 63 : params[P_CLOCK_HOLD];
+  int8_t m = (int8_t)pgm_read_byte(&lfoSine[(clockRamp >> 2) & 31]);
+  int16_t sweep = ((int16_t)m * (int16_t)amt) / 127;
+  int16_t swing = (int16_t)(((int32_t)amt * hold
+                           + (int32_t)sweep * (63 - hold)) / 63);
+  int d = (int)DIVISOR + (int)swing;
+  // The AY-3-8910 is rated to 2MHz. Stopping at 1.6MHz leaves headroom for
+  // forty-year-old parts rather than running them at the limit for an effect;
+  // downward there is no such constraint.
+  if (d < 4) d = 4;              // 1.6MHz
+  if (d > 20) d = 20;            // 380kHz
+  uint8_t sreg = SREG;
+  cli();
+  OCR1AH = 0;
+  OCR1AL = (uint8_t)d;           // 16-bit register: high byte first
+  SREG = sreg;
+}
+
 static void warpTick() {
+  // Its own ramp, so the clock keeps sweeping at its own speed whatever the
+  // Warp Zone is doing, and whether or not a mode is selected at all.
+  clockRamp++;
+  clockWarpTick();
+
   uint8_t mode = params[P_WARP_MODE];
   if (mode == 0) return;
 
@@ -1936,41 +1976,6 @@ static void warpTick() {
       break;
     }
 
-    case 10: {  // Clock Warp -- wobble the AY master clock itself. The
-                // Leonardo generates it on Timer1, so this sits upstream of
-                // all three chips: pitch, noise colour, envelope rates and
-                // drum decays all move together. That is vari-speed rather
-                // than a pitch shift, and nothing downstream can imitate it.
-      // Depth reaches thirteen divisor steps, so the clock can fall to
-      // 380kHz. A YM2149 with its SEL pin low runs at 500kHz, the halving a
-      // hardware clock switch gives; the old ceiling of five stopped at
-      // 615kHz, short of that, so the effect could not reach the sound the
-      // switch makes.
-      const uint8_t amt = warpScale(depth, 13);
-      // Motion mixes between sweeping the clock and sitting at the bottom of
-      // the sweep. At its top the clock is simply held down, which is what a
-      // halving switch does; a sine only visits its extreme for an instant,
-      // and the held sound is where the coarseness is. Turning a control up
-      // to get more of the effect is the point: the hold used to live at the
-      // bottom of Rate, where nothing suggested it.
-      const uint8_t hold = params[P_WARP_MOTION] > 63 ? 63 : params[P_WARP_MOTION];
-      int8_t m = (int8_t)pgm_read_byte(&lfoSine[(warpRamp >> 2) & 31]);
-      int16_t sweep = ((int16_t)m * (int16_t)amt) / 127;
-      int16_t swing = (int16_t)(((int32_t)amt * hold
-                               + (int32_t)sweep * (63 - hold)) / 63);
-      int d = (int)DIVISOR + (int)swing;
-      // The AY-3-8910 is rated to 2MHz. Stopping at 1.6MHz leaves headroom
-      // for forty-year-old parts rather than running them at the limit for
-      // the sake of an effect; downward there is no such constraint.
-      if (d < 4) d = 4;            // 1.6MHz
-      if (d > 20) d = 20;          // 380kHz, a deep sag
-      uint8_t sreg = SREG;
-      cli();
-      OCR1AH = 0;
-      OCR1AL = (uint8_t)d;         // 16-bit register: high byte first
-      SREG = sreg;
-      break;
-    }
 
     case 8: { // Ring -- flip each channel's amplitude between its real value
               // and a cut one at audio rate. That is amplitude modulation,
@@ -2581,7 +2586,8 @@ void loop() {
   // Warp Zone runs far faster than the 100Hz voice tick -- up to ~4kHz --
   // so it gets its own micros() timer. Unsigned subtraction handles the
   // ~70 minute micros() rollover correctly.
-  if (params[P_WARP_MODE] != 0 || params[P_MIX_NOISE] < 15) {
+  if (params[P_WARP_MODE] != 0 || params[P_MIX_NOISE] < 15
+      || params[P_CLOCK_ENABLE]) {
     unsigned long nowUs = micros();
 
     // The noise gate keeps its own fixed 4kHz clock: tying it to the warp
@@ -2592,7 +2598,9 @@ void loop() {
       noiseGateTick();
     }
 
-    if (params[P_WARP_MODE] != 0 &&
+    // Clock Warp is not a mode, so the tick has to run when one is selected
+    // or when the clock is enabled, or it would only work in company.
+    if ((params[P_WARP_MODE] != 0 || params[P_CLOCK_ENABLE]) &&
         (unsigned long)(nowUs - lastWarpUs) >= warpIntervalUs) {
       lastWarpUs = nowUs;
       warpTick();
