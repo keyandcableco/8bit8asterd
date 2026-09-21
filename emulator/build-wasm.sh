@@ -13,7 +13,7 @@ em++ -std=c++17 -O3 -x c++ -I. -I.. \
   -Wno-narrowing -Wno-write-strings \
   host.cpp \
   -o 8b8.js \
-  -s EXPORTED_FUNCTIONS='["_emu_init","_emu_render","_emu_note_on","_emu_note_off","_emu_cc","_emu_send_line","_emu_read_lines","_emu_seq_row","_emu_seq_cell","_emu_seq_clear","_emu_seq_start","_emu_seq_stop","_emu_seq_tempo","_emu_seq_step","_emu_reg","_emu_voice_playing","_malloc","_free"]' \
+  -s EXPORTED_FUNCTIONS='["_emu_init","_emu_render","_emu_note_on","_emu_note_off","_emu_cc","_emu_send_line","_emu_read_lines","_emu_seq_row","_emu_seq_cell","_emu_seq_clear","_emu_seq_start","_emu_seq_stop","_emu_seq_tempo","_emu_seq_swing","_emu_seq_step","_emu_reg","_emu_voice_playing","_malloc","_free"]' \
   -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","HEAPF32"]' \
   -s ALLOW_MEMORY_GROWTH=1 \
   -s MODULARIZE=0 \

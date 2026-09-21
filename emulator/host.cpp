@@ -80,6 +80,15 @@ static uint8_t  seqGateNote[SEQ_MAX_ROWS];
 static int      seqRows = 0, seqSteps = 16, seqCurStep = 0;
 static bool     seqRunning = false;
 static double   seqSamplesPerStep = 0.0, seqAcc = 0.0;
+// Swing, 0 to 1. Steps are sixteenths, so a swung pair is one long step and
+// one short: 1/3 gives the 2:1 triplet feel a jazz ride sits on. The pair
+// still totals two steps, so the tempo does not change.
+static double   seqSwing = 0.0;
+
+static double seqStepLen(int step) {
+  if (seqSwing <= 0.0) return seqSamplesPerStep;
+  return seqSamplesPerStep * ((step & 1) ? (1.0 - seqSwing) : (1.0 + seqSwing));
+}
 
 static double  sampleRate   = 44100.0;
 static double  stepCarry    = 0.0;
@@ -149,8 +158,8 @@ void emu_render(float *out, int n) {
       }
 
       seqAcc += 1.0;
-      if (seqAcc >= seqSamplesPerStep) {
-        seqAcc -= seqSamplesPerStep;
+      if (seqAcc >= seqStepLen(seqCurStep)) {
+        seqAcc -= seqStepLen(seqCurStep);
         for (int r = 0; r < seqRows; r++) {
           const uint8_t len = seqCell[r][seqCurStep];
           if (!len) continue;
@@ -216,6 +225,10 @@ void emu_seq_start(double bpm, int steps) {
   seqCurStep = 0;
   seqAcc = 0.0;
   seqRunning = true;
+}
+
+void emu_seq_swing(double amount) {
+  seqSwing = amount < 0.0 ? 0.0 : (amount > 0.75 ? 0.75 : amount);
 }
 
 void emu_seq_tempo(double bpm) {

@@ -842,6 +842,10 @@
         </select>
         <span class="label">Length</span>
         <select id="seqLen"></select>
+        <span class="label">Swing</span>
+        <input type="range" id="seqSwing" min="0" max="66" value="0"
+               style="flex:1 1 90px;max-width:130px">
+        <span class="value" id="seqSwingVal">0%</span>
         <span class="label">Sig</span>
         <select id="seqSig">
           <option value="4">4/4</option>
@@ -1062,6 +1066,8 @@ function seqEnginePattern(rows){
     return { note: r.note, chan: r.chan, lens };
   });
 }
+let seqSwing = 0;
+function seqEngineSwing(amount){ seqSwing = amount; }
 function seqEngineTempo(bpm){ seqBpm = bpm; }
 function seqEngineStep(){ return seqPos; }
 function seqEngineStop(){
@@ -1092,7 +1098,10 @@ function seqEngineStart(bpm, steps){
       if (ch !== 9) seqHeld.push({ note: r.note, left: len });
     });
     seqPos = (seqPos + 1) % seqLen;
-    seqNextAt += 60000 / seqBpm / 4;
+    // A swung pair is one long step and one short; the pair still totals two
+    // steps, so the tempo is unchanged.
+    const base = 60000 / seqBpm / 4;
+    seqNextAt += base * ((seqPos & 1) ? (1 + seqSwing) : (1 - seqSwing));
     seqTimer = setTimeout(tick, Math.max(0, seqNextAt - performance.now()));
   };
   tick();
@@ -2616,7 +2625,30 @@ const SEQ_PATTERNS = {
   'Breakbeat':{ Kick:[0,3,9,10], Snare:[4,12], Hat:[0,2,4,6,8,10,12,14], OpnHat:[14] },
   'Arcade':   { Kick:[0,6,8,14], Snare:[4,12], Rim:[2,10], Crash:[0] },
   'Half Time':{ Kick:[0,10], Snare:[8], Hat:[0,4,8,12] },
-  'Tom Roll': { LoTom:[0,2,4,6], HiTom:[8,10,12,14], Crash:[0] }
+  'Tom Roll': { LoTom:[0,2,4,6], HiTom:[8,10,12,14], Crash:[0] },
+  // Son clave spans two bars, so these run to step 31 and set the length to
+  // 32 on load. 3:2 puts the three-side first.
+  'Clave 3:2': {
+    assign: { Rim: 39, OpnHat: 56 },
+    Rim:   [0, 6, 12, 20, 24],
+    Kick:  [0, 16],
+    OpnHat:[8, 24]
+  },
+  'Clave 2:3': {
+    assign: { Rim: 39, OpnHat: 56 },
+    Rim:   [4, 8, 16, 22, 28],
+    Kick:  [0, 16],
+    OpnHat:[8, 24]
+  },
+  // Jazz ride: quarter, quarter plus the swung upbeat, repeating. Needs the
+  // Swing control up around 33% to sit as a triplet; flat it reads as
+  // sixteenths. Hat on two and four is the foot.
+  'Jazz Ride': {
+    assign: { Crash: 51, OpnHat: 44 },
+    Crash: [0, 4, 7, 8, 12, 15, 16, 20, 23, 24, 28, 31],
+    OpnHat:[4, 12, 20, 28],
+    Kick:  [0, 22]
+  }
 };
 
 // One row per semitone, highest at the top so it reads like a piano roll.
@@ -2858,6 +2890,14 @@ function buildSequencer(){
     paintLength();
   };
 
+  const swing = document.getElementById('seqSwing');
+  const swingVal = document.getElementById('seqSwingVal');
+  if (swing) swing.oninput = () => {
+    const pct = parseInt(swing.value, 10) || 0;
+    swingVal.textContent = pct + '%';
+    seqEngineSwing(pct / 100);
+  };
+
   const sigSel = document.getElementById('seqSig');
   if (sigSel) sigSel.onchange = () => {
     seqBeatsPerBar = parseInt(sigSel.value, 10) || 4;
@@ -3012,15 +3052,43 @@ function paintPlayhead(){
 // display read the new one.
 function loadPattern(name){
   const p = SEQ_PATTERNS[name] || {};
-  const base = seqPage * SEQ_PAGE;
+
+  // A pattern may repoint rows onto the drums it needs, since the eight rows
+  // are a working set rather than a fixed kit.
+  if (p.assign){
+    SEQ_ROWS.forEach((r, ri) => {
+      if (p.assign[r.name] !== undefined) drumAssign[ri] = p.assign[r.name];
+    });
+    document.querySelectorAll('#seqRows .seqname select').forEach((sel, ri) => {
+      sel.value = String(drumAssign[ri]);
+    });
+    try { localStorage.setItem('8b8.drumAssign', JSON.stringify(drumAssign)); } catch(e){}
+  }
+
+  // Patterns reaching past step 15 are written from the start rather than
+  // into the page on screen, and the loop grows to hold them: a clave landing
+  // half on one page and half on another would be neither.
+  let last = 0;
+  SEQ_ROWS.forEach(r => (p[r.name] || []).forEach(i => { if (i > last) last = i; }));
+  const spans = last >= SEQ_PAGE;
+  const base = spans ? 0 : seqPage * SEQ_PAGE;
+  const width = spans ? SEQ_STEPS : SEQ_PAGE;
+
   SEQ_ROWS.forEach((r, ri) => {
     // Patterns name the default row, not the drum, so a preset still lands
     // in the right place after a row has been repointed.
     const on = p[r.name] || [];
-    for (let s = 0; s < SEQ_PAGE; s++) seqGrid[ri][base + s] = 0;
-    on.forEach(i => { if (i < SEQ_PAGE) seqGrid[ri][base + i] = 1; });
+    for (let s = 0; s < width && base + s < SEQ_STEPS; s++) seqGrid[ri][base + s] = 0;
+    on.forEach(i => { if (base + i < SEQ_STEPS) seqGrid[ri][base + i] = 1; });
   });
+
+  if (spans){
+    const pages = Math.floor(last / SEQ_PAGE) + 1;
+    if (maxPageOpened < pages - 1) maxPageOpened = pages - 1;
+    if (seqLength < pages * SEQ_PAGE) setSeqLength(pages * SEQ_PAGE);
+  }
   paintSeq();
+  paintLength();
   seqEnginePattern(seqRowsForEngine());
 }
 
