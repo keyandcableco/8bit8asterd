@@ -1136,6 +1136,17 @@ function seqEngineStart(bpm, steps){
   tick();
 }
 
+/* ---- MIDI file transport: timer driven ---- */
+// Notes reach the unit over a wire, so there is no audio clock to time
+// against; the player keeps its own timer for this transport.
+let midiSerialEvents = null;
+function midiEngineLoad(events){ midiSerialEvents = events; return false; }
+function midiEngineStart(){}
+function midiEngineStop(){}
+function midiEngineSpeed(){}
+function midiEngineLoop(){}
+function midiEnginePos(){ return -1; }
+
 
 /* ==== Protocol (shared by both transports) ============================== */
 let sawLayout = false;
@@ -2523,6 +2534,8 @@ function midiAllOff(){
 }
 
 function midiStop(){
+  if (midiInEngine) midiEngineStop();
+  midiInEngine = false;
   midiPlaying = false;
   if (midiTimer) clearInterval(midiTimer);
   midiTimer = null;
@@ -2531,6 +2544,10 @@ function midiStop(){
   if (b) b.textContent = 'Play File';
 }
 
+// True when the engine is timing playback, so the JS timer only draws the
+// readout instead of dispatching notes.
+let midiInEngine = false;
+
 function midiPlay(){
   if (!midiFile || !midiFile.events.length) return;
   midiStop();
@@ -2538,11 +2555,22 @@ function midiPlay(){
   midiNext = 0;
   midiClock = 0;
   midiLastReal = performance.now();
+  midiInEngine = midiEngineLoad(midiFile.events);
+  if (midiInEngine) midiEngineStart(midiSpeed, midiLoop);
   const b = document.getElementById('midiPlayBtn');
   if (b) b.textContent = 'Stop File';
 
   midiTimer = setInterval(() => {
     if (!midiPlaying) return;
+    if (midiInEngine){
+      const at = midiEnginePos();
+      midiStatus(at.toFixed(1) + ' / ' + midiFile.duration.toFixed(1) + ' s' +
+                 (midiSpeed !== 1 ? '   x' + midiSpeed.toFixed(2) : '') +
+                 (midiLoop ? '   loop' : ''));
+      if (!midiLoop && at === 0 && midiClock > 0.5) midiStop();
+      midiClock += 0.005;
+      return;
+    }
     const real = performance.now();
     midiClock += ((real - midiLastReal) / 1000) * midiSpeed;
     midiLastReal = real;
@@ -2626,12 +2654,14 @@ function buildMidiFile(){
   if (spd) spd.oninput = () => {
     midiSpeed = (parseInt(spd.value, 10) || 100) / 100;
     spdVal.textContent = 'Speed ' + midiSpeed.toFixed(2) + 'x';
+    midiEngineSpeed(midiSpeed);
   };
 
   const loopSw = document.getElementById('midiLoopSw');
   if (loopSw) loopSw.onclick = () => {
     midiLoop = !midiLoop;
     loopSw.classList.toggle('active', midiLoop);
+    midiEngineLoop(midiLoop);
   };
 }
 

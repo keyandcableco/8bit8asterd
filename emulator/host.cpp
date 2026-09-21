@@ -94,6 +94,30 @@ static double  sampleRate   = 44100.0;
 static double  stepCarry    = 0.0;
 static double  loopAccUs    = 0.0;
 static double  waveAccUs    = 0.0;
+
+// ---------------------------------------------------------------------------
+// MIDI file playback
+// ---------------------------------------------------------------------------
+// Events are timestamped in seconds and fired from the render loop, not from
+// a timer. The audio callback runs on the page's main thread, so a JS timer
+// shares it: on a dense file the notes arrived in late bursts behind each
+// buffer render. Here the clock is the sample count and cannot drift.
+struct MidiEv { double t; uint8_t st, d1, d2; };
+
+// Controller 123 is All Notes Off. Sent on both the melodic and percussion
+// channels when playback stops or loops, so a note held across the join is
+// not left sounding.
+static void midiPanic() {
+  MidiUSB.push(midiEventPacket_t{0x0B, 0xB0, 123, 0});
+  MidiUSB.push(midiEventPacket_t{0x0B, 0xB9, 123, 0});
+}
+static std::vector<MidiEv> midiEvs;
+static size_t  midiIdx     = 0;
+static double  midiClockS  = 0.0;
+static double  midiSpeedX  = 1.0;
+static double  midiDurS    = 0.0;
+static bool    midiRunning = false;
+static bool    midiLoopOn  = false;
 static bool    started      = false;
 
 extern "C" {
@@ -107,6 +131,7 @@ void emu_init(double rate) {
   emuMicros = 0;
   memset(emuEeprom, 0xFF, sizeof emuEeprom);
   for (int i = 0; i < 3; i++) chips[i].reset();
+  midiEvs.clear(); midiIdx = 0; midiClockS = 0.0; midiRunning = false;
   seqRunning = false; seqRows = 0; seqCurStep = 0; seqAcc = 0.0;
   memset(seqCell, 0, sizeof seqCell);
   memset(seqChan, 9, sizeof seqChan);
@@ -141,6 +166,19 @@ void emu_render(float *out, int n) {
     if (loopAccUs >= 125.0) {      // ~8kHz
       loopAccUs = 0.0;
       loop();
+    }
+
+    // Fire any MIDI file events whose time has arrived.
+    if (midiRunning) {
+      midiClockS += midiSpeedX / sampleRate;
+      while (midiIdx < midiEvs.size() && midiEvs[midiIdx].t <= midiClockS) {
+        const MidiEv &e = midiEvs[midiIdx++];
+        MidiUSB.push(midiEventPacket_t{(uint8_t)(e.st >> 4), e.st, e.d1, e.d2});
+      }
+      if (midiIdx >= midiEvs.size() && midiClockS > midiDurS + 0.25) {
+        if (midiLoopOn) { midiIdx = 0; midiClockS = 0.0; midiPanic(); }
+        else { midiRunning = false; midiPanic(); }
+      }
     }
 
     // Fire sequencer steps on their exact sample.
@@ -226,6 +264,35 @@ void emu_seq_start(double bpm, int steps) {
   seqAcc = 0.0;
   seqRunning = true;
 }
+
+void emu_midi_clear() {
+  midiEvs.clear();
+  midiIdx = 0; midiClockS = 0.0; midiDurS = 0.0; midiRunning = false;
+}
+
+/** Events must arrive in time order; the player sorts before sending. */
+void emu_midi_add(double t, int st, int d1, int d2) {
+  midiEvs.push_back(MidiEv{t, (uint8_t)st, (uint8_t)d1, (uint8_t)d2});
+  if (t > midiDurS) midiDurS = t;
+}
+
+void emu_midi_start(double speed, int loop) {
+  midiSpeedX = speed > 0.01 ? speed : 0.01;
+  midiLoopOn = loop != 0;
+  midiIdx = 0; midiClockS = 0.0;
+  midiRunning = !midiEvs.empty();
+}
+
+void emu_midi_speed(double speed) { midiSpeedX = speed > 0.01 ? speed : 0.01; }
+void emu_midi_loop(int loop) { midiLoopOn = loop != 0; }
+
+void emu_midi_stop() {
+  midiRunning = false;
+  midiPanic();
+}
+
+/** Play position in seconds, for the readout. */
+double emu_midi_pos() { return midiRunning ? midiClockS : 0.0; }
 
 void emu_seq_swing(double amount) {
   seqSwing = amount < 0.0 ? 0.0 : (amount > 0.75 ? 0.75 : amount);
