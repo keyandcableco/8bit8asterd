@@ -3026,12 +3026,16 @@ function pwDecode(code){
 
 function pwApply(code){
   const deltas = pwDecode(code);
+  // Built in memory and sent as one LOAD: line. Applied one at a time this
+  // put seventy-seven writes on the wire back to back -- fifty-seven resets
+  // and then the deltas -- which a serial link will not all survive.
   PARAMS.forEach(p => {
-    const init = (PRESETS['Init'] && PRESETS['Init'][p.key] !== undefined)
+    values[p.index] = (PRESETS['Init'] && PRESETS['Init'][p.key] !== undefined)
       ? PRESETS['Init'][p.key] : p.default;
-    setValue(p.index, init, true);
   });
-  deltas.forEach(([i, v]) => setValue(i, v, true));
+  deltas.forEach(([i, v]) => { values[i] = v; });
+  renderAll();
+  send('LOAD:' + values.join(','));
   return deltas.length;
 }
 
