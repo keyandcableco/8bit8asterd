@@ -1315,6 +1315,10 @@ static inline void waveTimerRun(bool) {}
 #endif
 
 static uint8_t  clockRamp = 0;      // Clock Warp sweeps on its own phase
+// The clock limits keep a forty-year-old part inside its rating. The emulator
+// can ask for them off, since there is no chip there to damage; the hardware
+// panel never sends this.
+static bool clockUnlocked = false;
 static uint16_t warpRngState = 0xACE1;
 
 // Depth is a magnitude, 1..63, and every mode should respond to it evenly.
@@ -1864,7 +1868,12 @@ static void clockWarpTick() {
   // which the sweep's divide by 127 then truncated to zero everywhere except
   // the two sine peaks. The control did nothing at all until 8.
   const uint8_t drop = params[P_CLOCK_DROP];
-  const uint8_t amt = drop ? (uint8_t)(1 + (((uint16_t)(drop - 1) * 12 + 31) / 62)) : 0;
+  // Unlocked, Drop spreads over the whole range the timer can reach rather
+  // than the thirteen steps that stop at the chip's rating. Lifting the clamp
+  // alone would change nothing: the drop amount was what limited it.
+  const uint8_t reach = clockUnlocked ? 53 : 13;
+  const uint8_t amt = drop
+    ? (uint8_t)(1 + (((uint16_t)(drop - 1) * (reach - 1) + 31) / 62)) : 0;
   if (!amt) return;
   // Hold mixes between sweeping the clock and sitting at the bottom of the
   // sweep. At its top the clock is simply held down, as a halving switch
@@ -1883,8 +1892,10 @@ static void clockWarpTick() {
   // The AY-3-8910 is rated to 2MHz. Stopping at 1.6MHz leaves headroom for
   // forty-year-old parts rather than running them at the limit for an effect;
   // downward there is no such constraint.
-  if (d < 4) d = 4;              // 1.6MHz
-  if (d > 20) d = 20;            // 380kHz
+  const int lo = clockUnlocked ? 1 : 4;     // 4 = 1.6MHz, inside the rating
+  const int hi = clockUnlocked ? 60 : 20;   // 20 = 380kHz
+  if (d < lo) d = lo;
+  if (d > hi) d = hi;
   uint8_t sreg = SREG;
   cli();
   OCR1AH = 0;
@@ -2213,6 +2224,11 @@ static void handleCommand(char *cmd) {
       if (i < NUM_PARAMS - 1) Serial.print(',');
     }
     Serial.println();
+  }
+  else if (strncmp(cmd, "XCLK:", 5) == 0) {
+    clockUnlocked = (cmd[5] != '0');
+    Serial.print(F("XCLK:"));
+    Serial.println(clockUnlocked ? 1 : 0);
   }
   else if (strcmp(cmd, "DIAG") == 0) {
     // Voice map: index:chip/what/stage/age-in-ticks. This is what to read

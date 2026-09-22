@@ -900,6 +900,32 @@
     </div>
 
     <div class="module">
+      <h2>Password</h2>
+      <div class="bar cc-row" style="margin:0 13px 10px;align-items:flex-end;">
+        <div class="cc">
+          <input type="text" id="pwInput" placeholder="ENTER CODE"
+                 spellcheck="false" style="width:220px;font-family:var(--mono)">
+          <span class="cc-label">Enter</span>
+        </div>
+        <div class="cc">
+          <button class="btn" id="pwGo">Go</button>
+          <span class="cc-label">Load patch</span>
+        </div>
+        <span class="spacer"></span>
+        <div class="cc">
+          <input type="text" id="pwShow" readonly placeholder="—"
+                 style="width:220px;font-family:var(--mono)">
+          <span class="cc-label">This patch</span>
+        </div>
+        <div class="cc">
+          <button class="btn" id="pwMake">Make</button>
+          <span class="cc-label">Generate</span>
+        </div>
+      </div>
+      <p class="section-blurb">A password carries the settings alone &mdash; short enough to read aloud or print on a card. Save Game carries everything else.</p>
+    </div>
+
+    <div class="module">
       <h2>MIDI File</h2>
       <div class="bar filepick cc-row" style="margin:0 13px 10px;align-items:flex-end;">
         <input type="file" id="midiFileInput" accept=".mid,.midi,audio/midi">
@@ -2794,6 +2820,35 @@ function buildMidiFile(){
     }
   }
 
+  // The code, on the keyboard. Ignored while typing into a field, or it
+  // would fire while someone enters a password.
+  document.addEventListener('keydown', e => {
+    const t = e.target && e.target.tagName;
+    if (t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT') return;
+    konamiStep(e.key.length === 1 ? e.key.toLowerCase() : e.key);
+  });
+
+  const pwIn = document.getElementById('pwInput');
+  const pwGo = document.getElementById('pwGo');
+  const pwOut = document.getElementById('pwShow');
+  if (pwGo && pwIn){
+    pwGo.onclick = () => {
+      try {
+        const n = pwApply(pwIn.value);
+        log('sys', 'Password accepted: ' + n + ' setting(s) restored.');
+      } catch (err){
+        log('err', 'Password rejected: ' + err.message);
+      }
+    };
+    pwIn.onkeydown = e => { if (e.key === 'Enter') pwGo.onclick(); };
+  }
+  const pwMake = document.getElementById('pwMake');
+  if (pwMake && pwOut) pwMake.onclick = () => {
+    pwOut.value = pwEncode();
+    pwOut.select && pwOut.select();
+    log('sys', 'Password for the current patch. Settings only -- no sequence.');
+  };
+
   const saveBtn = document.getElementById('imgSave');
   if (saveBtn) saveBtn.onclick = saveImage;
 
@@ -2849,6 +2904,134 @@ function buildMidiFile(){
     syncSw.classList.toggle('active', midiSync);
     midiApplyTempo();
   };
+}
+
+/* ==== Cheat code and patch passwords ==================================== */
+// Two ways in. The code unlocks a bank of patches kept out of the normal
+// list, and on the emulator lifts the master clock's limits. A password
+// carries a patch alone -- no sequence, no file -- short enough to read
+// aloud or print on a card.
+
+const HIDDEN_PRESETS = {"Dead Air": {"clock_enable": 1, "clock_drop": 63, "clock_hold": 63, "warp_mode": 7, "warp_rate": 90, "warp_depth": 55}, "Wasp Factory": {"warp_mode": 10, "warp_rate": 120, "warp_depth": 63, "wave_enable": 1, "wave_shape": 4, "wave_level": 15}, "Cathedral": {"draw_enable": 1, "draw_a": 1, "draw_a_level": 15, "draw_b": 4, "draw_b_level": 12, "buzz_enable": 1, "buzz_pure": 1, "buzz_ratio": 2}, "Wrong Speed": {"clock_enable": 1, "clock_drop": 50, "clock_hold": 20, "clock_sweep": 3, "uni_enable": 1, "uni_detune": 26}, "Hornet": {"warp_mode": 10, "warp_rate": 120, "warp_depth": 63, "buzz_enable": 1, "buzz_ratio": 1, "buzz_detune": 6, "draw_enable": 1, "draw_a": 8, "draw_a_level": 9}};
+const UNSAFE_CLOCK = false;
+let unlocked = false;
+
+// Up up down down left right left right B A, on the keyboard or a gamepad.
+const KONAMI = ['ArrowUp','ArrowUp','ArrowDown','ArrowDown',
+                'ArrowLeft','ArrowRight','ArrowLeft','ArrowRight','b','a'];
+let konamiAt = 0;
+
+function konamiStep(token){
+  konamiAt = (token === KONAMI[konamiAt]) ? konamiAt + 1
+           : (token === KONAMI[0] ? 1 : 0);
+  if (konamiAt >= KONAMI.length){ konamiAt = 0; unlock(); }
+}
+
+function unlock(){
+  if (unlocked) return;
+  unlocked = true;
+
+  const sel = document.getElementById('presetSelect');
+  if (sel){
+    const sep = document.createElement('option');
+    sep.disabled = true; sep.textContent = '\u2014 unlocked \u2014';
+    sel.appendChild(sep);
+    Object.keys(HIDDEN_PRESETS).forEach(name => {
+      const o = document.createElement('option');
+      o.value = name; o.textContent = name;
+      sel.appendChild(o);
+      PRESETS[name] = HIDDEN_PRESETS[name];
+    });
+  }
+
+  // The clock's limits exist to keep a forty-year-old chip inside its rating.
+  // Lifting them is only offered where there is no chip to damage.
+  if (typeof UNSAFE_CLOCK !== 'undefined' && UNSAFE_CLOCK){
+    send('XCLK:1');
+    document.body.classList.add('unlocked');
+  }
+
+  log('sys', 'Unlocked: ' + Object.keys(HIDDEN_PRESETS).length +
+      ' patches added to the preset list' +
+      ((typeof UNSAFE_CLOCK !== 'undefined' && UNSAFE_CLOCK)
+        ? ', and the master clock limits are off.' : '.'));
+}
+
+/* ---- patch passwords ---- */
+// Crockford base32: no I, L, O or U, so nothing is mistaken for 1 or 0 when
+// read aloud or copied off a screen. Only the parameters that differ from
+// Init are carried, which is what keeps a code short: a dozen changes rather
+// than fifty-seven values.
+const PW_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+function pwEncode(){
+  const bits = [];
+  const push = (v, n) => { for (let i = n - 1; i >= 0; i--) bits.push((v >> i) & 1); };
+
+  const deltas = [];
+  PARAMS.forEach(p => {
+    const init = (PRESETS['Init'] && PRESETS['Init'][p.key] !== undefined)
+      ? PRESETS['Init'][p.key] : p.default;
+    if (values[p.index] !== init) deltas.push([p.index, values[p.index]]);
+  });
+
+  push(deltas.length, 6);
+  deltas.forEach(([i, v]) => { push(i, 6); push(v, 8); });
+  while (bits.length % 5) bits.push(0);
+
+  let out = '', sum = 0, pos = 1;
+  for (let i = 0; i < bits.length; i += 5){
+    let v = 0;
+    for (let k = 0; k < 5; k++) v = (v << 1) | bits[i + k];
+    // Weighted by position, so transposing two characters is caught as well
+    // as changing one, and a code's length is part of what it checks.
+    sum = (sum + v * pos++) & 31;
+    out += PW_ALPHABET[v];
+  }
+  out += PW_ALPHABET[sum];                 // one check character
+  return out.replace(/(.{4})(?=.)/g, '$1-');
+}
+
+function pwDecode(code){
+  const clean = String(code).toUpperCase().replace(/[^0-9A-Z]/g, '')
+                  .replace(/I/g, '1').replace(/L/g, '1')
+                  .replace(/O/g, '0');
+  if (clean.length < 3) throw new Error('too short');
+
+  const chars = clean.slice(0, -1), check = clean.slice(-1);
+  let sum = 0, pos = 1;
+  const bits = [];
+  for (const c of chars){
+    const v = PW_ALPHABET.indexOf(c);
+    if (v < 0) throw new Error('bad character: ' + c);
+    sum = (sum + v * pos++) & 31;
+    for (let i = 4; i >= 0; i--) bits.push((v >> i) & 1);
+  }
+  if (PW_ALPHABET[sum] !== check) throw new Error('check digit does not match');
+
+  let at = 0;
+  const take = n => { let v = 0; for (let i = 0; i < n; i++) v = (v << 1) | bits[at++]; return v; };
+  const count = take(6);
+  if (6 + count * 14 > bits.length) throw new Error('truncated');
+
+  const out = [];
+  for (let i = 0; i < count; i++){
+    const idx = take(6), val = take(8);
+    if (idx >= PARAMS.length) throw new Error('unknown setting in code');
+    out.push([idx, val]);
+  }
+  return out;
+}
+
+function pwApply(code){
+  const deltas = pwDecode(code);
+  PARAMS.forEach(p => {
+    const init = (PRESETS['Init'] && PRESETS['Init'][p.key] !== undefined)
+      ? PRESETS['Init'][p.key] : p.default;
+    setValue(p.index, init, true);
+  });
+  deltas.forEach(([i, v]) => setValue(i, v, true));
+  return deltas.length;
 }
 
 /* ==== Instrument image ================================================== */
@@ -3674,7 +3857,19 @@ function gpChords(btn, hit){
   if (hit(GP.START)){ heldRows.clear(); soundingKey = null; releaseChord(); strumNotes = []; paintChords(); }
 }
 
+
+// The code on a controller, which is where it belongs. The detector is the
+// same one the keyboard feeds, so either route gets there.
+const GP_KONAMI = [[GP.UP,'ArrowUp'], [GP.DOWN,'ArrowDown'],
+                   [GP.LEFT,'ArrowLeft'], [GP.RIGHT,'ArrowRight'],
+                   [GP.B,'b'], [GP.A,'a']];
+
+function gpKonami(hit){
+  for (const [btn, token] of GP_KONAMI) if (hit(btn)) konamiStep(token);
+}
+
 function gpDrums(hit){
+  gpKonami(hit);
   GP_DRUMS.forEach(([b, note]) => { if (hit(b)) playNote(note, 110, 9); });
 }
 
