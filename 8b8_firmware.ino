@@ -1796,14 +1796,25 @@ static void clockWarpTick() {
   // Drop reaches thirteen divisor steps, so the clock can fall to 380kHz. A
   // YM2149 with its SEL pin low runs at 500kHz, the halving a hardware clock
   // switch gives, and this reaches past it.
-  const uint8_t amt = warpScale(params[P_CLOCK_DROP], 13);
+  // Drop 1 already gives the smallest step the hardware has, and the range
+  // spreads from there. The old mapping wasted its first seven positions:
+  // three rounded to nothing, and the four after that produced a swing of 1,
+  // which the sweep's divide by 127 then truncated to zero everywhere except
+  // the two sine peaks. The control did nothing at all until 8.
+  const uint8_t drop = params[P_CLOCK_DROP];
+  const uint8_t amt = drop ? (uint8_t)(1 + (((uint16_t)(drop - 1) * 12 + 31) / 62)) : 0;
+  if (!amt) return;
   // Hold mixes between sweeping the clock and sitting at the bottom of the
   // sweep. At its top the clock is simply held down, as a halving switch
   // holds it; a sine only visits its extreme for an instant, and the held
   // sound is where the coarseness is.
   const uint8_t hold = params[P_CLOCK_HOLD] > 63 ? 63 : params[P_CLOCK_HOLD];
   int8_t m = (int8_t)pgm_read_byte(&lfoSine[(clockRamp >> 2) & 31]);
-  int16_t sweep = ((int16_t)m * (int16_t)amt) / 127;
+  // Rounded, not truncated: OCR1A is an integer, so the smallest real step
+  // is one divisor, and truncating meant the smallest settings never reached
+  // it. This is the floor of the effect -- about 13 per cent of pitch -- and
+  // there is no finer step available on the hardware.
+  int16_t sweep = (int16_t)(((int32_t)m * amt + (m < 0 ? -63 : 63)) / 127);
   int16_t swing = (int16_t)(((int32_t)amt * hold
                            + (int32_t)sweep * (63 - hold)) / 63);
   int d = (int)DIVISOR + (int)swing;
