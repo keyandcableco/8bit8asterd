@@ -807,7 +807,7 @@ HTML_TEMPLATE = r"""<!doctype html>
     font-family:var(--pixel); font-size:calc(7px * var(--ui-scale));
     color:var(--text-dim); margin-right:4px;
   }
-  .bar .spacer{ flex:1 1 auto; }
+  .bar .spacer, .transport .spacer{ flex:1 1 auto; }
   .bar.settings{ border-top-width:0; }
   /* .bar sets display:flex, and a class rule beats the browser's default
      [hidden]{display:none} -- so the panel needs this or it never hides. */
@@ -1278,11 +1278,12 @@ __TRANSPORT_UI__
   </div>
 
   <div class="transport" id="transport">
+    <button class="btn play" id="seqPlay">Play</button>
+    <span class="tinfo" id="transportInfo">&mdash;</span>
+    <span class="spacer"></span>
     <button class="btn" id="imgSave">Save Game</button>
     <input type="file" id="imgLoadInput" accept=".8b8,.json" style="display:none">
     <button class="btn" id="imgLoad">Load Game</button>
-    <button class="btn play" id="seqPlay">Play</button>
-    <span class="tinfo" id="transportInfo">&mdash;</span>
   </div>
 
   <div class="bar">
