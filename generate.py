@@ -1260,6 +1260,9 @@ __TRANSPORT_UI__
   </div>
 
   <div class="transport" id="transport">
+    <button class="btn" id="imgSave">Save Game</button>
+    <input type="file" id="imgLoadInput" accept=".8b8,.json" style="display:none">
+    <button class="btn" id="imgLoad">Load Game</button>
     <button class="btn play" id="seqPlay">Play</button>
     <span class="tinfo" id="transportInfo">&mdash;</span>
   </div>
@@ -3026,6 +3029,10 @@ function parseMidiFile(buf){
 // dispatching early would play them early -- a lookahead only helps when the
 // events can carry a timestamp, which these cannot. A short interval keeps
 // the error small and always on the late side, which is the forgiving one.
+// The file's own bytes, kept so a saved game can carry the piece as well
+// as the settings. Base64 rather than the ArrayBuffer, since that is what
+// has to go into JSON anyway.
+let midiRaw = null, midiName = '';
 let midiFile = null, midiPlaying = false, midiTimer = null;
 let midiNext = 0, midiHeldNotes = [];
 let midiSpeed = 1.0, midiLoop = false, midiSync = false;
@@ -3052,6 +3059,27 @@ function midiApplyTempo(){
 // the speed can change mid-file without the position jumping, and a loop can
 // reset it without disturbing anything else.
 let midiClock = 0, midiLastReal = 0;
+
+function bytesToBase64(bytes){
+  let s = '';
+  for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+  return btoa(s);
+}
+
+function loadMidiFromBase64(b64, name){
+  const raw = atob(b64);
+  const buf = new ArrayBuffer(raw.length);
+  const view = new Uint8Array(buf);
+  for (let i = 0; i < raw.length; i++) view[i] = raw.charCodeAt(i);
+  midiFile = parseMidiFile(buf);
+  midiRaw = b64;
+  midiName = name;
+  const nameEl = document.getElementById('midiFileName');
+  if (nameEl) nameEl.textContent = name;
+  midiStatus(name + ': ' + midiFile.events.length + ' notes, ' +
+             midiFile.duration.toFixed(1) + 's, ' + midiFile.bpm + ' BPM');
+  midiApplyTempo();
+}
 
 function midiStatus(msg){
   const el = document.getElementById('midiFileInfo');
@@ -3159,6 +3187,8 @@ function buildMidiFile(){
     fr.onload = () => {
       try {
         midiFile = parseMidiFile(fr.result);
+        midiRaw = bytesToBase64(new Uint8Array(fr.result));
+        midiName = f.name;
         const warn = midiFile.peak > 9
           ? '  \u2014 wants ' + midiFile.peak + ' notes at once, only 9 voices: some will be stolen'
           : '';
@@ -3196,6 +3226,8 @@ function buildMidiFile(){
       const view = new Uint8Array(buf);
       for (let i = 0; i < raw.length; i++) view[i] = raw.charCodeAt(i);
       midiFile = parseMidiFile(buf);
+      midiRaw = demo;
+      midiName = 'invention.mid';
       const nameEl = document.getElementById('midiFileName');
       if (nameEl) nameEl.textContent = 'invention.mid';
       midiStatus('invention.mid (included): ' + midiFile.events.length + ' notes, ' +
@@ -3205,6 +3237,39 @@ function buildMidiFile(){
     } catch (err){
       midiFile = null;
     }
+  }
+
+  const saveBtn = document.getElementById('imgSave');
+  if (saveBtn) saveBtn.onclick = saveImage;
+
+  const loadBtn = document.getElementById('imgLoad');
+  const loadIn  = document.getElementById('imgLoadInput');
+  if (loadBtn && loadIn){
+    loadBtn.onclick = () => loadIn.click();
+    loadIn.onchange = () => {
+      const f = loadIn.files && loadIn.files[0];
+      if (!f) return;
+      const fr = new FileReader();
+      fr.onload = () => {
+        try {
+          const img = JSON.parse(fr.result);
+          const missing = applyImage(img);
+          let msg = 'Loaded ' + f.name;
+          if (img.layout !== LAYOUT_VERSION){
+            msg += '  \u2014 made on layout ' + img.layout + ', this is ' +
+                   LAYOUT_VERSION;
+          }
+          if (missing.length){
+            msg += '. ' + missing.length + ' setting(s) not in the save, left as they were: '
+                 + missing.join(', ');
+          }
+          log(missing.length || img.layout !== LAYOUT_VERSION ? 'err' : 'sys', msg);
+        } catch (err){
+          log('err', 'Could not read that save: ' + err.message);
+        }
+      };
+      fr.readAsText(f);
+    };
   }
 
   const spd = document.getElementById('midiSpeed');
@@ -3229,6 +3294,149 @@ function buildMidiFile(){
     syncSw.classList.toggle('active', midiSync);
     midiApplyTempo();
   };
+}
+
+/* ==== Instrument image ================================================== */
+// One file holding everything that decides what the instrument sounds like:
+// the parameter bank, the sequencer's grids and transport, the chord matrix
+// and harp, and the loaded MIDI file. Enough to hand someone else and have
+// them hear what you are hearing.
+//
+// The layout version travels with it. Parameters are stored by NAME rather
+// than index, so an image made before a parameter was added still loads: the
+// names that still exist are applied and the rest reported, instead of a
+// silent misalignment where every value lands one slot out.
+
+const IMAGE_FORMAT = 1;
+
+function captureImage(){
+  const img = {
+    format: IMAGE_FORMAT,
+    layout: LAYOUT_VERSION,
+    saved: new Date().toISOString(),
+    params: {},
+    seq: {
+      drums: seqGrid.map(r => r.slice()),
+      notes: noteGrid.map(r => r.slice()),
+      assign: drumAssign.slice(),
+      length: seqLength,
+      page: seqPage,
+      tempo: parseInt(document.getElementById('seqTempo').value, 10) || 110,
+      swing: parseInt(document.getElementById('seqSwing').value, 10) || 0,
+      sig: document.getElementById('seqSig').value,
+      playing: seqPlaying
+    },
+    chords: {
+      keySig, accidentalMode, altLayout, barryOn, stackOn, sharpOn, latchOn,
+      inversion, spacing, chordOct, strumOct, kbOct,
+      harpMode, customMask, strumLayout
+    }
+  };
+
+  PARAMS.forEach(p => { img.params[p.key] = values[p.index]; });
+
+  // The MIDI file travels with the image, or the sequence would arrive
+  // without the piece it was playing against.
+  if (midiFile && midiRaw){
+    img.midi = { name: midiName, data: midiRaw, speed: midiSpeed,
+                 loop: midiLoop, sync: midiSync, playing: midiPlaying };
+  }
+  return img;
+}
+
+function applyImage(img){
+  if (!img || img.format !== IMAGE_FORMAT) throw new Error('not an 8b8 save');
+
+  const missing = [];
+  if (img.params){
+    PARAMS.forEach(p => {
+      if (img.params[p.key] === undefined){ missing.push(p.key); return; }
+      setValue(p.index, img.params[p.key], true);
+    });
+  }
+
+  if (img.seq){
+    const q = img.seq;
+    if (q.drums) q.drums.forEach((r, i) => { if (seqGrid[i]) seqGrid[i] = r.slice(); });
+    if (q.notes) q.notes.forEach((r, i) => { if (noteGrid[i]) noteGrid[i] = r.slice(); });
+    if (q.assign){
+      drumAssign = q.assign.slice();
+      document.querySelectorAll('#seqRows .seqname select').forEach((sel, i) => {
+        sel.value = String(drumAssign[i]);
+      });
+    }
+    if (q.length) setSeqLength(q.length);
+    if (q.page !== undefined){
+      seqPage = q.page;
+      const ps = document.getElementById('seqPageSel');
+      if (ps) ps.value = String(seqPage);
+      if (seqPage > maxPageOpened) maxPageOpened = seqPage;
+    }
+    const t = document.getElementById('seqTempo');
+    if (t && q.tempo){ t.value = q.tempo; t.oninput(); }
+    const sw = document.getElementById('seqSwing');
+    if (sw && q.swing !== undefined){ sw.value = q.swing; sw.oninput(); }
+    const sg = document.getElementById('seqSig');
+    if (sg && q.sig){ sg.value = q.sig; sg.onchange(); }
+    paintSeq(); paintLength();
+    seqEnginePattern(seqRowsForEngine());
+  }
+
+  if (img.chords){
+    const c = img.chords;
+    if (c.keySig !== undefined){
+      keySig = c.keySig;
+      const k = document.getElementById('keySigSel');
+      if (k){ k.value = String(keySig); }
+    }
+    if (c.accidentalMode !== undefined) accidentalMode = c.accidentalMode;
+    if (c.altLayout !== undefined) altLayout = c.altLayout;
+    if (c.barryOn !== undefined) barryOn = c.barryOn;
+    if (c.stackOn !== undefined) stackOn = c.stackOn;
+    if (c.sharpOn !== undefined) sharpOn = c.sharpOn;
+    if (c.latchOn !== undefined) latchOn = c.latchOn;
+    [['sharpSw', sharpOn], ['barrySw', barryOn], ['stackSw', stackOn],
+     ['latchSw', latchOn]].forEach(([id, on]) => {
+      const el = document.getElementById(id);
+      if (el) el.classList.toggle('active', !!on);
+    });
+    if (c.inversion !== undefined) inversion = c.inversion;
+    if (c.spacing !== undefined) spacing = c.spacing;
+    if (c.chordOct !== undefined) chordOct = c.chordOct;
+    if (c.strumOct !== undefined) strumOct = c.strumOct;
+    if (c.kbOct !== undefined) kbOct = c.kbOct;
+    if (c.harpMode !== undefined) harpMode = c.harpMode;
+    if (c.customMask !== undefined) customMask = c.customMask;
+    if (c.strumLayout !== undefined) strumLayout = c.strumLayout;
+    relabelChords();
+    // Redraws the ladder from the restored key, harp mode and octaves.
+    updateStrum();
+  }
+
+  if (img.midi && img.midi.data){
+    loadMidiFromBase64(img.midi.data, img.midi.name || 'shared.mid');
+    const sp = document.getElementById('midiSpeed');
+    if (sp && img.midi.speed){ sp.value = Math.round(img.midi.speed * 100); sp.oninput(); }
+    if (img.midi.loop && !midiLoop) document.getElementById('midiLoopSw').onclick();
+    if (img.midi.sync && !midiSync) document.getElementById('midiSyncSw').onclick();
+  }
+
+  // Start whatever was running, so the image plays rather than merely loads.
+  if (img.seq && img.seq.playing && !seqPlaying) toggleSeq();
+  if (img.midi && img.midi.playing && !midiPlaying) midiPlay();
+
+  return missing;
+}
+
+function saveImage(){
+  const blob = new Blob([JSON.stringify(captureImage(), null, 1)],
+                        { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '8b8-save-' + new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.8b8';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  log('sys', 'Game saved. It carries the whole instrument, including whatever is playing.');
 }
 
 /* ==== Drum sequencer ==================================================== */
