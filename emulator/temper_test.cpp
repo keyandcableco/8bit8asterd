@@ -45,6 +45,11 @@ int main() {
     { 2, "Just",     386.3 },
     { 1, "Meantone", 386.3 },
     { 6, "Vallotti", 392.2 },
+    // The octave divisions, by their twelve-note meantone layout. 31 is
+    // chosen for its major third, a cent from pure; 19 for its minor third,
+    // so its major third is 7 cents narrow rather than 14 wide.
+    { 10, "19-EDO",  378.9 },
+    { 11, "31-EDO",  387.1 },
   };
   const double TOLERANCE = 6.0;
 

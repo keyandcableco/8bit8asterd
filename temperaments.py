@@ -62,6 +62,27 @@ def fifths_meantone(fraction_of_syntonic_comma):
     return fifths([d] * 8 + [None] + [d] * 3)
 
 
+def edo12(n, chromatic, diatonic):
+    """Twelve notes of an n-EDO, laid out as a meantone keyboard (Eb to G#).
+
+    An octave division has more than twelve notes, so a twelve-key instrument
+    plays a subset. This is the meantone layout: C# rather than Db, Eb rather
+    than D#, G# rather than Ab, which is what the same keyboard has meant
+    since the sixteenth century. The chromatic semitone (C to C#) and the
+    diatonic one (C to Db) are given as steps; a whole tone is their sum, and
+    the octave must close. In 19 they are 1 and 2, in 31 they are 2 and 3.
+
+    The root parameter rotates the layout, so the sweet keys move with it.
+    """
+    tone = chromatic + diatonic
+    steps = [0, chromatic, tone, tone + diatonic, 2 * tone, 2 * tone + diatonic,
+             2 * tone + diatonic + chromatic, 3 * tone + diatonic,
+             3 * tone + diatonic + chromatic, 4 * tone + diatonic,
+             4 * tone + 2 * diatonic, 5 * tone + diatonic]
+    assert steps[-1] + diatonic == n, f"{n}-EDO: this layout does not close the octave"
+    return [1200 * st / n - 100 * i for i, st in enumerate(steps)]
+
+
 # ---------------------------------------------------------------------------
 # name:   in the parameters.json tooltip
 # label:  a short name for an editor's option list
@@ -98,6 +119,12 @@ PROFILES = [
     dict(name="sixth-comma meantone", label="1/6 Meantone",
          note="Meantone with fifths narrowed by a sixth of the syntonic comma. Major thirds are 7.2 cents wide instead of pure, and the wolf between G# and Eb shrinks to 16 cents, so more keys are usable. Often associated with Gottfried Silbermann's organs.",
          cents=fifths_meantone(1 / 6)),
+    dict(name="19-EDO", label="19-EDO",
+         note="Nineteen equal steps to the octave, twelve of them on the keys in the meantone layout: C# is a step below Db, and the keys play the sharp of the pair on the left of the wolf and the flat on the right. Minor thirds land within a cent of pure 6:5 and major thirds 7 cents narrow, the mirror of equal temperament's 14 wide. Root moves the layout with the key.",
+         cents=edo12(19, 1, 2)),
+    dict(name="31-EDO", label="31-EDO",
+         note="Thirty-one equal steps, extended meantone made exact: major thirds one cent from pure 5:4 and fifths 5 cents narrow, the sound quarter-comma meantone was reaching for. Twelve of the thirty-one are on the keys, in the same Eb to G# layout, and Root moves them with the key. The other nineteen are not reachable from a twelve-note keyboard.",
+         cents=edo12(31, 2, 3)),
     # add new temperaments here, at the end
 ]
 

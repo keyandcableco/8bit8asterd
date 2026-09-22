@@ -39,6 +39,19 @@ import json
 import os
 import sys
 
+from temperaments import PROFILES as TEMPER_PROFILES
+
+# Panel labels per temperament, in profile order. Enum buttons are narrow, so
+# a few are abbreviated; the full names stay in temperaments.py. Any profile
+# without an entry here shows its own label, so a new one appears unnamed
+# rather than not at all.
+TEMPER_SHORT = {"quarter-comma meantone": "Meantone", "five-limit just (C major)": "Just",
+                "pythagorean": "Pythag", "werckmeister III": "Werck III",
+                "kirnberger III": "Kirn III", "vallotti": "Vallotti",
+                "young no. 2": "Young", "kellner": "Kellner",
+                "sixth-comma meantone": "1/6 Mean", "equal": "Equal"}
+TEMPER_LABELS = [TEMPER_SHORT.get(p["name"], p["label"]) for p in TEMPER_PROFILES]
+
 # ---------------------------------------------------------------------------
 # Parameter definitions
 # ---------------------------------------------------------------------------
@@ -314,12 +327,16 @@ PARAMS = [
               "15 leaves them on the hardware envelope, untouched."),
 
     dict(key="temperament", label="Temperament", group="Tuning", kind="enum",
-         options=["Equal", "Meantone", "Just", "Pythag", "Werck III",
-                  "Kirn III", "Vallotti", "Young", "Kellner", "1/6 Mean"],
+         # Derived from temperaments.py rather than typed out, so a
+         # temperament added there reaches the parameter's range. A hand copy
+         # stopped at ten and the firmware clamped anything past it away.
+         options=[TEMPER_LABELS[i] for i in range(len(TEMPER_LABELS))],
          default=0,
-         help="Historical tunings. Audible in the lower octaves; above about "
-              "MIDI 72 the AY's integer divisor is too coarse to render the "
-              "offsets and they round away."),
+         help="Historical tunings, and two divisions of the octave. Audible in "
+              "the lower octaves; above about MIDI 72 the AY's integer divisor "
+              "is too coarse to render the offsets and they round away. 19-EDO "
+              "and 31-EDO put twelve of their notes on the keys in the meantone "
+              "layout; Root moves that layout with the key."),
     dict(key="temper_root", label="Root", group="Tuning", kind="enum",
          options=["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"],
          default=0,

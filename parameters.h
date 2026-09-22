@@ -6,7 +6,7 @@
 #include <avr/pgmspace.h>
 
 #define NUM_PARAMS 57
-#define PARAM_LAYOUT_VERSION 0x12
+#define PARAM_LAYOUT_VERSION 0x98
 
 enum {
   P_BUZZ_ENABLE = 0,  // Buzzy Bass: Enable [0..1] default 0
@@ -63,13 +63,13 @@ enum {
   P_MIX_NOISE = 51,  // Mixer: Noise [0..15] default 15
   P_MIX_TONE = 52,  // Mixer: Tone [0..15] default 15
   P_MIX_DRUM = 53,  // Mixer: Drums [0..15] default 15
-  P_TEMPERAMENT = 54,  // Tuning: Temperament [0..9] default 0
+  P_TEMPERAMENT = 54,  // Tuning: Temperament [0..11] default 0
   P_TEMPER_ROOT = 55,  // Tuning: Root [0..11] default 0
   P_VEL_SENSE = 56,  // Pitch & Response: Velocity [0..1] default 1
 };
 
 static const uint8_t PARAM_MIN[NUM_PARAMS] PROGMEM = { 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 50, 50, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
-static const uint8_t PARAM_MAX[NUM_PARAMS] PROGMEM = { 1, 8, 3, 1, 64, 10, 120, 63, 1, 63, 120, 63, 64, 1, 5, 15, 1, 8, 15, 8, 15, 1, 32, 1, 200, 31, 200, 1, 200, 15, 1, 15, 200, 200, 200, 14, 50, 30, 1, 63, 6, 50, 64, 50, 1, 32, 32, 32, 32, 100, 48, 15, 15, 15, 9, 11, 1 };
+static const uint8_t PARAM_MAX[NUM_PARAMS] PROGMEM = { 1, 8, 3, 1, 64, 10, 120, 63, 1, 63, 120, 63, 64, 1, 5, 15, 1, 8, 15, 8, 15, 1, 32, 1, 200, 31, 200, 1, 200, 15, 1, 15, 200, 200, 200, 14, 50, 30, 1, 63, 6, 50, 64, 50, 1, 32, 32, 32, 32, 100, 48, 15, 15, 15, 11, 11, 1 };
 static const uint8_t PARAM_DEFAULT[NUM_PARAMS] PROGMEM = { 0, 1, 0, 0, 32, 0, 30, 20, 0, 30, 20, 0, 0, 0, 0, 12, 0, 3, 8, 0, 6, 0, 8, 0, 50, 6, 0, 0, 40, 5, 0, 8, 100, 100, 100, 7, 0, 0, 0, 0, 0, 17, 32, 0, 0, 1, 26, 32, 19, 0, 24, 15, 15, 15, 0, 0, 1 };
 
 // Ticks between events for the re-strike controls (Drum Roll,

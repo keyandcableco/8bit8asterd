@@ -6,8 +6,8 @@
 
 #include <avr/pgmspace.h>
 
-#define NUM_TEMPERAMENTS 10
-#define TEMPER_CENT_SPAN 40   // table covers -SPAN..+SPAN cents
+#define NUM_TEMPERAMENTS 12
+#define TEMPER_CENT_SPAN 60   // table covers -SPAN..+SPAN cents
 
 // Cents from equal temperament, pitch classes C..B. A is 0 in every row.
 static const int8_t temperCents[NUM_TEMPERAMENTS][12] PROGMEM = {
@@ -21,11 +21,15 @@ static const int8_t temperCents[NUM_TEMPERAMENTS][12] PROGMEM = {
   {  6,  -4,   2,   0,  -2,   4,  -6,   4,  -2,   0,   2,  -4 },   // young no. 2
   {  8,  -2,   3,   2,  -3,   6,  -4,   5,   0,   0,   4,  -1 },   // kellner
   {  5,  -7,   2,  10,  -2,   7,  -5,   3,  -8,   0,   8,  -3 },   // sixth-comma meantone
+  { 16, -21,   5,  32,  -5,  21, -16,  11, -26,   0,  26, -11 },   // 19-EDO
+  { 10, -13,   3,  19,  -3,  13, -10,   6, -16,   0,  16,  -6 },   // 31-EDO
 };
 
 // 32768 * 2^(-cents/1200), indexed by cents + TEMPER_CENT_SPAN.
 // A tone period is a DIVISOR, so a sharper note needs a SMALLER one.
-static const uint16_t temperFactor[81] PROGMEM = {
+static const uint16_t temperFactor[121] PROGMEM = {
+  33924, 33904, 33884, 33865, 33845, 33826, 33806, 33787, 33767, 33748,
+  33728, 33709, 33689, 33670, 33650, 33631, 33611, 33592, 33573, 33553,
   33534, 33515, 33495, 33476, 33457, 33437, 33418, 33399, 33379, 33360,
   33341, 33322, 33302, 33283, 33264, 33245, 33225, 33206, 33187, 33168,
   33149, 33130, 33110, 33091, 33072, 33053, 33034, 33015, 32996, 32977,
@@ -34,7 +38,9 @@ static const uint16_t temperFactor[81] PROGMEM = {
   32579, 32560, 32542, 32523, 32504, 32485, 32467, 32448, 32429, 32410,
   32392, 32373, 32354, 32336, 32317, 32298, 32280, 32261, 32242, 32224,
   32205, 32186, 32168, 32149, 32131, 32112, 32094, 32075, 32057, 32038,
-  32020,
+  32020, 32001, 31983, 31964, 31946, 31927, 31909, 31890, 31872, 31854,
+  31835, 31817, 31798, 31780, 31762, 31743, 31725, 31707, 31688, 31670,
+  31652,
 };
 
 #endif // TEMPERAMENTS_H
