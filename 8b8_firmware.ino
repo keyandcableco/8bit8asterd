@@ -1215,6 +1215,7 @@ static volatile uint8_t  waveChip  = 0xFF;  // 0xFF = not running
 static volatile uint8_t  waveReg   = 0;
 static volatile uint8_t  waveTable = 0;
 static volatile uint8_t  waveGain  = 16;    // 0..16: Level times the ADSR
+static volatile uint8_t  waveDither = 0;   // fractional amplitude accumulator
 static uint8_t waveVoice = NO_VOICE;   // which voice the ISR has taken over
 static void applyWavetable();          // noteOn calls this before it is defined
 
@@ -1229,8 +1230,19 @@ static inline void waveTick() {
   // flat out until the note ended while every other voice breathed, which is
   // why a square voice alongside it sounded like the one with the envelope.
   // A multiply and a shift; no divide, this is an interrupt.
-  v = (uint8_t)(((uint16_t)v * waveGain) >> 4);
-  writeReg(waveChip, waveReg, v);
+  // Volume PWM. The amplitude register has sixteen steps, so a quiet
+  // waveform is drawn with only a handful of them and goes visibly blocky as
+  // the envelope falls. Scaling at 8 bits and dithering the remainder
+  // between the two neighbouring steps lets the ear average them into
+  // something between: the Atari ST scene got about six bits this way. Free
+  // here, since this runs at 16kHz already.
+  uint16_t scaled = ((uint16_t)v * waveGain) / 15u;   // 0..255 per table step
+  uint8_t whole = (uint8_t)(scaled >> 4);
+  uint8_t frac  = (uint8_t)(scaled & 0x0F);
+  waveDither = (uint8_t)(waveDither + frac);
+  if (waveDither & 0x10) { whole++; waveDither &= 0x0F; }  // carried, step up
+  if (whole > 15) whole = 15;
+  writeReg(waveChip, waveReg, whole);
 }
 
 #ifdef __AVR__
@@ -1669,8 +1681,9 @@ static void applyWavetable() {
     int amp = voices[target].m_ampl >> 6;          // 0..15
     if (amp < 0) amp = 0;
     if (amp > 15) amp = 15;
-    uint16_t g = ((uint16_t)params[P_WAVE_LEVEL] * (uint16_t)amp * 16u) / 225u;
-    waveGain = (uint8_t)(g > 16 ? 16 : g);
+    // 0..255 rather than 0..16, so the dither has a remainder to work with.
+    uint16_t g = ((uint16_t)params[P_WAVE_LEVEL] * (uint16_t)amp * 255u) / 225u;
+    waveGain = (uint8_t)(g > 255 ? 255 : g);
   }
   waveReg   = (uint8_t)(PSGRegs::TONEAAMPL + sub);
   waveStep  = (uint16_t)step;
