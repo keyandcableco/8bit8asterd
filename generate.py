@@ -3528,6 +3528,7 @@ function captureImage(){
       sig: document.getElementById('seqSig').value,
       playing: seqPlaying
     },
+    unlocked,
     chords: {
       keySig, accidentalMode, altLayout, barryOn, stackOn, sharpOn, latchOn,
       inversion, spacing, chordOct, strumOct, kbOct,
@@ -3537,12 +3538,11 @@ function captureImage(){
 
   PARAMS.forEach(p => { img.params[p.key] = values[p.index]; });
 
-  // The MIDI file travels with the image, or the sequence would arrive
-  // without the piece it was playing against.
-  if (midiFile && midiRaw){
-    img.midi = { name: midiName, data: midiRaw, speed: midiSpeed,
-                 loop: midiLoop, sync: midiSync, playing: midiPlaying };
-  }
+  // Deliberately not the MIDI file itself. It is already a file, the person
+  // receiving a save can load their own, and carrying it made every save
+  // several times larger than the settings it exists to hold. The player's
+  // own controls still travel.
+  img.midi = { speed: midiSpeed, loop: midiLoop, sync: midiSync };
   return img;
 }
 
@@ -3551,11 +3551,17 @@ function applyImage(img){
 
   const missing = [];
   if (img.params){
+    // Applied as one LOAD: line, the way Apply and Import already do it.
+    // Fifty-seven separate writes back to back is more than a serial link
+    // wants to take, and a dropped one leaves a setting silently behind.
     PARAMS.forEach(p => {
       if (img.params[p.key] === undefined){ missing.push(p.key); return; }
-      setValue(p.index, img.params[p.key], true);
+      values[p.index] = img.params[p.key] | 0;
     });
+    renderAll();
+    send('LOAD:' + values.join(','));
   }
+
 
   if (img.seq){
     const q = img.seq;
@@ -3615,8 +3621,11 @@ function applyImage(img){
     updateStrum();
   }
 
-  if (img.midi && img.midi.data){
-    loadMidiFromBase64(img.midi.data, img.midi.name || 'shared.mid');
+  // The unlock changes what the clock controls can reach, so a save made
+  // with it on has to turn it on again or the patch will not sound the same.
+  if (img.unlocked && !unlocked) unlock();
+
+  if (img.midi){
     const sp = document.getElementById('midiSpeed');
     if (sp && img.midi.speed){ sp.value = Math.round(img.midi.speed * 100); sp.oninput(); }
     if (img.midi.loop && !midiLoop) document.getElementById('midiLoopSw').onclick();
@@ -3625,7 +3634,6 @@ function applyImage(img){
 
   // Start whatever was running, so the image plays rather than merely loads.
   if (img.seq && img.seq.playing && !seqPlaying) toggleSeq();
-  if (img.midi && img.midi.playing && !midiPlaying) midiPlay();
 
   return missing;
 }
