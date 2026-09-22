@@ -6,7 +6,7 @@
 #include <avr/pgmspace.h>
 
 #define NUM_PARAMS 52
-#define PARAM_LAYOUT_VERSION 0xF6
+#define PARAM_LAYOUT_VERSION 0xF9
 
 enum {
   P_BUZZ_ENABLE = 0,  // Buzzy Bass: Enable [0..1] default 0
@@ -14,7 +14,7 @@ enum {
   P_BUZZ_SHAPE = 2,  // Buzzy Bass: Shape [0..3] default 0
   P_BUZZ_PURE = 3,  // Buzzy Bass: Pure [0..1] default 0
   P_BUZZ_DETUNE = 4,  // Buzzy Bass: Detune [0..64] default 32
-  P_WARP_MODE = 5,  // Warp Zone: Mode [0..9] default 0
+  P_WARP_MODE = 5,  // Warp Zone: Mode [0..10] default 0
   P_WARP_RATE = 6,  // Warp Zone: Rate [1..120] default 30
   P_WARP_DEPTH = 7,  // Warp Zone: Depth [1..63] default 20
   P_CLOCK_ENABLE = 8,  // Clock Warp: Enable [0..1] default 0
@@ -64,7 +64,7 @@ enum {
 };
 
 static const uint8_t PARAM_MIN[NUM_PARAMS] PROGMEM = { 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 50, 50, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
-static const uint8_t PARAM_MAX[NUM_PARAMS] PROGMEM = { 1, 8, 3, 1, 64, 9, 120, 63, 1, 63, 120, 63, 64, 1, 5, 15, 1, 32, 1, 200, 31, 200, 1, 200, 15, 1, 15, 200, 200, 200, 14, 50, 30, 1, 63, 6, 50, 64, 50, 1, 32, 32, 32, 32, 100, 48, 15, 15, 15, 9, 11, 1 };
+static const uint8_t PARAM_MAX[NUM_PARAMS] PROGMEM = { 1, 8, 3, 1, 64, 10, 120, 63, 1, 63, 120, 63, 64, 1, 5, 15, 1, 32, 1, 200, 31, 200, 1, 200, 15, 1, 15, 200, 200, 200, 14, 50, 30, 1, 63, 6, 50, 64, 50, 1, 32, 32, 32, 32, 100, 48, 15, 15, 15, 9, 11, 1 };
 static const uint8_t PARAM_DEFAULT[NUM_PARAMS] PROGMEM = { 0, 1, 0, 0, 32, 0, 30, 20, 0, 30, 20, 0, 0, 0, 0, 12, 0, 8, 0, 50, 6, 0, 0, 40, 5, 0, 8, 100, 100, 100, 7, 0, 0, 0, 0, 0, 17, 32, 0, 0, 1, 26, 32, 19, 0, 24, 15, 15, 15, 0, 0, 1 };
 
 // Ticks between events for the re-strike controls (Drum Roll,

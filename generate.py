@@ -81,7 +81,8 @@ PARAMS = [
     # normal voice updates keep fighting them -- that fight is the sound.
     dict(key="warp_mode", label="Mode", group="Warp Zone", kind="enum",
          options=["Off", "Sync Buzz", "Stutter", "Scramble", "Zap",
-                  "Tape Stop", "Siren", "Crush", "Ring", "Env Crush"],
+                  "Tape Stop", "Siren", "Crush", "Ring", "Env Crush",
+                  "SID Voice"],
          default=0,
          help="Sync Buzz restarts the envelope. Stutter gates the mixer. "
               "Scramble throws junk at registers. Zap sweeps noise. The "
@@ -2282,7 +2283,8 @@ const WARP_LABELS = [
   ['Siren speed', 'Range', 'Drift'],            // Siren
   ['Crush rate', 'Bits', 'Drift'],              // Crush
   ['Ring freq', 'Amount', 'Drift'],             // Ring
-  ['Crush rate', 'Bits', 'Drift']               // Env Crush
+  ['Crush rate', 'Bits', 'Drift'],              // Env Crush
+  ['Buzz freq', 'Bite', 'Drift']                // SID Voice
 ];
 
 // Parameter controls carry no id, so the three are found once by their

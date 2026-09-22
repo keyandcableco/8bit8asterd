@@ -2011,6 +2011,28 @@ static void warpTick() {
     }
 
 
+    case 10: { // SID Voice -- hard square modulation of one voice's amplitude
+               // at the full warp rate. Ring does the same thing to every
+               // channel at once, but rotates a chip per tick, so each sees
+               // the toggle only every sixth one: too slow for the hard buzz
+               // the Atari ST scene got this way, and it costs nine register
+               // writes a tick. One voice at full rate is one write, and it
+               // reaches the kilohertz region where the edge appears.
+      if (m_highest == NO_NOTE) break;
+      uint8_t v = m_voiceNo[m_highest];
+      if (v == NO_VOICE || v >= MAX_VOICES || !voices[v].isPlaying()) break;
+      const uint8_t chip = (uint8_t)(v % 3), sub = (uint8_t)(v / 3);
+      uint8_t a = psg.regs[chip][PSGRegs::TONEAAMPL + sub];
+      if (a & 0x10) break;                 // envelope-driven: leave alone
+      // Bite is how far the low half of the square falls. Full silences it,
+      // which is the hardest edge; less leaves some of the note underneath.
+      const uint8_t cut = warpScale(depth, 15);
+      const uint8_t lowLvl = (uint8_t)(a > cut ? a - cut : 0);
+      writeReg(chip, PSGRegs::TONEAAMPL + sub,
+               (warpPhase & 1) ? lowLvl : (uint8_t)(a & 0x0F));
+      break;
+    }
+
     case 8: { // Ring -- flip each channel's amplitude between its real value
               // and a cut one at audio rate. That is amplitude modulation,
               // and it gives the metallic ring-mod clang the AY has no
