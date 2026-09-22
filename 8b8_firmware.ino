@@ -662,6 +662,8 @@ public:
   uint8_t m_partner;      // the unison twin's voice number, or NO_VOICE
   bool m_softEnv;         // decay in software; the chip's envelope is taken
   bool m_keepNoise;       // another noise drum is ringing here; leave its period
+  uint8_t m_level;        // 0..15, how loud this voice sits; drawbar stops
+                          // sound under the note rather than beside it
   uint8_t m_envAcc;       // 1/16ths carried between ticks
 
   // Rates are in 1/16ths of an amplitude unit per tick, so a four second
@@ -711,6 +713,10 @@ public:
   }
 
   void start(note_t note, midictrl_t vel, midictrl_t chan) {
+    // Full level unless a drawbar stop overrides it after this returns. Set
+    // here rather than only where the voice is constructed, so a voice that
+    // once carried a stop does not stay quiet when reused for a plain note.
+    m_level = 15;
     // Envelope source: either the original per-MIDI-channel presets, or the
     // global custom ADSR from the parameter bank.
     ToneParams tp;
@@ -1123,6 +1129,31 @@ static uint8_t claimVoice(int8_t preferChip) {
   return v;
 }
 
+// Organ footages as a ratio against the note at 8'. The tone register is a
+// divisor, so numerator and denominator sit the other way round from the
+// frequency: 4' sounds an octave up, which is half the divisor.
+// 5 1/3' is the sub-fifth: a fifth above the 16' sub-octave, which sounds a
+// fourth BELOW the note, not a fifth above it. Its divisor is therefore
+// larger than the note's, not smaller.
+static const uint8_t DRAW_NUM[9] PROGMEM = { 0, 2, 3, 1, 1, 1, 1, 1, 1 };
+static const uint8_t DRAW_DEN[9] PROGMEM = { 1, 1, 2, 2, 3, 4, 5, 6, 8 };
+
+static void addDrawbar(ushort idx, uint8_t stop, uint8_t level) {
+  if (stop == 0 || stop > 8) return;
+  uint8_t v = findFreeVoice(-1);
+  if (v == NO_VOICE) return;          // never steal: a stop is not worth a note
+
+  voices[v].start(MIDI_MIN + idx, m_velocity[idx], m_chan[idx]);
+  uint32_t d = ((uint32_t)voices[v].m_target * pgm_read_byte(&DRAW_NUM[stop]))
+               / pgm_read_byte(&DRAW_DEN[stop]);
+  if (d < 1) d = 1;
+  if (d > 4095) d = 4095;
+  voices[v].m_target = (ushort)d;
+  voices[v].m_pitch  = (ushort)d;
+  voices[v].m_level  = level;
+  m_playing[v] = idx;
+}
+
 static bool startNote(ushort idx) {
   uint8_t v = claimVoice(-1);
   if (v == NO_VOICE) return false;
@@ -1150,6 +1181,15 @@ static bool startNote(ushort idx) {
       voices[v].m_partner = u;
       voices[u].m_partner = NO_VOICE;   // the twin owns no one
     }
+  }
+
+  // Drawbars: each stop is the same note at a harmonic ratio on its own
+  // voice, summed at the output. Squares at these ratios reshape the timbre
+  // rather than merely thickening it, which on a chip with no filter is the
+  // only route to a new tone colour.
+  if (params[P_DRAW_ENABLE] && m_chan[idx] != PERC_CHANNEL) {
+    addDrawbar(idx, params[P_DRAW_A], params[P_DRAW_A_LEVEL]);
+    addDrawbar(idx, params[P_DRAW_B], params[P_DRAW_B_LEVEL]);
   }
   return true;
 }
@@ -1438,17 +1478,16 @@ static bool startPercussion(note_t note) {
 static bool stopNote(ushort idx) {
   uint8_t v = m_voiceNo[idx];
   if (v != NO_VOICE && m_playing[v] != NO_NOTE) {
-    // Release the twin first, or it would be left ringing with nothing
-    // pointing at it -- m_voiceNo only ever knows about the lead voice.
-    uint8_t u = voices[v].m_partner;
-    if (u != NO_VOICE && u < MAX_VOICES && m_playing[u] == idx) {
+    // Sweep every voice carrying this note: the unison twin and any drawbar
+    // stops. m_voiceNo only ever knows about the lead one, so anything else
+    // would be left ringing with nothing pointing at it.
+    for (uint8_t u = 0; u < MAX_VOICES; u++) {
+      if (m_playing[u] != idx) continue;
       voices[u].stop();
       m_playing[u] = NO_NOTE;
       voices[u].m_partner = NO_VOICE;
+      voices[u].m_level = 15;      // back to full for whatever reuses it
     }
-    voices[v].m_partner = NO_VOICE;
-    voices[v].stop();
-    m_playing[v] = NO_NOTE;
     m_voiceNo[idx] = NO_VOICE;
     return true;
   }
@@ -2428,6 +2467,9 @@ static void update100Hz() {
       // the noise period register is per-chip and shared with percussion
       // -- a drum and a noise-blended voice on the same chip fight over
       // it, last writer wins. Chip-level quirk, documented behaviour.
+      // A drawbar stop plays under the note, not beside it.
+      if (voices[i].m_level < 15) a = (a * voices[i].m_level) / 15;
+
       if (i == waveVoice) {
         // The wavetable ISR writes this channel's amplitude sixteen thousand
         // times a second. Writing it from here too put a step in the waveform

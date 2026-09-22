@@ -142,6 +142,31 @@ PARAMS = [
          help="Peak of the waveform. Low values lose resolution fast, since "
               "there are only sixteen amplitude steps to draw it with."),
 
+    dict(key="draw_enable", label="Enable", group="Drawbars", kind="toggle",
+         default=0,
+         help="Adds harmonics of each note on further voices, the way an "
+              "organ's drawbars do. Summed squares at these ratios reshape "
+              "the timbre rather than just thickening it, which is the only "
+              "route to a new tone colour on a chip with no filter. Costs a "
+              "voice per stop, so polyphony falls accordingly."),
+    dict(key="draw_a", label="Stop 1", group="Drawbars", kind="enum",
+         options=["Off", "16'", "5 1/3'", "4'", "2 2/3'", "2'", "1 3/5'", "1 1/3'", "1'"],
+         default=3,
+         help="Pitch of the first added stop, in organ footages against the "
+              "note at 8'. 16' is an octave below, 4' an octave above, "
+              "2 2/3' a twelfth above."),
+    dict(key="draw_a_level", label="Level 1", group="Drawbars", kind="int",
+         min=1, max=15, default=8,
+         help="How loud the first stop sits under the note."),
+    dict(key="draw_b", label="Stop 2", group="Drawbars", kind="enum",
+         options=["Off", "16'", "5 1/3'", "4'", "2 2/3'", "2'", "1 3/5'", "1 1/3'", "1'"],
+         default=0,
+         help="Pitch of the second added stop. Off leaves the voice free for "
+              "polyphony."),
+    dict(key="draw_b_level", label="Level 2", group="Drawbars", kind="int",
+         min=1, max=15, default=6,
+         help="How loud the second stop sits under the note."),
+
     dict(key="uni_enable", label="Enable", group="Unison", kind="toggle",
          default=0,
          help="Doubles each melodic note on a second voice a little out of "
@@ -380,7 +405,7 @@ SECTIONS = [
          groups=["Mixer"]),
     dict(key="tone", title="Tone Voices", scope="pitched voices",
          blurb="The melodic side. Nothing here touches the drum channel.",
-         groups=["Envelope", "Tuning", "Pitch & Response", "Buzzy Bass", "Unison", "Wavetable",
+         groups=["Envelope", "Tuning", "Pitch & Response", "Buzzy Bass", "Unison", "Drawbars", "Wavetable",
                  "Vibrato", "Tremolo", "Noise Blend", "Auto FX"]),
     dict(key="drum", title="Drum Voices", scope="MIDI channel 10",
          blurb="Percussion only. Drums are the voices driven by each chip's "
