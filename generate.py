@@ -63,6 +63,12 @@ PARAMS = [
          options=["Saw \u2193", "Tri \u2193\u2191", "Saw \u2191", "Tri \u2191\u2193"],
          default=0,
          help="Which looping envelope shape the hardware runs: 0 and 2 are sawtooths, 1 and 3 triangles. This is where a non-square waveform comes from -- the chip has no other."),
+    dict(key="buzz_pure", label="Pure", group="Buzzy Bass", kind="toggle",
+         default=0,
+         help="Closes the channel's tone gate, so only the envelope reaches "
+              "the output. Off, the square still gates the envelope and you "
+              "hear the product of the two; on, you get the hardware "
+              "sawtooth or triangle by itself."),
     dict(key="buzz_detune", label="Detune", group="Buzzy Bass", kind="int",
          min=0, max=64, default=32, offset=-32,
          help="Offsets the envelope against the square wave. Non-zero gives "

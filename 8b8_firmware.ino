@@ -504,6 +504,15 @@ public:
   // scales the channel's tone divisor to get the envelope-period divisor;
   // there's no clean closed-form for "in tune", so this is meant to be
   // tuned by ear via the ratio control rather than computed exactly.
+  void applyBuzzGate(uint8_t chip, uint8_t sub, bool pure) {
+    // The tone gate stays open by default, so the square gates the envelope
+    // and the output is the product of the two. Closed, only the envelope
+    // reaches the output: the hardware sawtooth or triangle on its own.
+    unsigned char *r = regs[chip];
+    if (pure) r[MIXER] |= (uint8_t)(1u << sub);
+    else      r[MIXER] &= (uint8_t)~(1u << sub);
+  }
+
   void applyBuzz(uint8_t chip, uint8_t sub, ushort toneDivisor, uint8_t ratio,
                  uint8_t shape, int8_t detune) {
     unsigned char *r = regs[chip];
@@ -1717,6 +1726,7 @@ static void applyBuzzyBass() {
                   params[P_BUZZ_RATIO],
                   pgm_read_byte(&buzzShapes[params[P_BUZZ_SHAPE] & 3]),
                   (int8_t)((int)params[P_BUZZ_DETUNE] - 32));
+    psg.applyBuzzGate(newChip, newSub, params[P_BUZZ_PURE] != 0);
   }
 
   g_buzzChip = newChip;

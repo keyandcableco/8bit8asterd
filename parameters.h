@@ -5,66 +5,67 @@
 
 #include <avr/pgmspace.h>
 
-#define NUM_PARAMS 51
-#define PARAM_LAYOUT_VERSION 0x56
+#define NUM_PARAMS 52
+#define PARAM_LAYOUT_VERSION 0xF6
 
 enum {
   P_BUZZ_ENABLE = 0,  // Buzzy Bass: Enable [0..1] default 0
   P_BUZZ_RATIO = 1,  // Buzzy Bass: Ratio [1..8] default 1
   P_BUZZ_SHAPE = 2,  // Buzzy Bass: Shape [0..3] default 0
-  P_BUZZ_DETUNE = 3,  // Buzzy Bass: Detune [0..64] default 32
-  P_WARP_MODE = 4,  // Warp Zone: Mode [0..9] default 0
-  P_WARP_RATE = 5,  // Warp Zone: Rate [1..120] default 30
-  P_WARP_DEPTH = 6,  // Warp Zone: Depth [1..63] default 20
-  P_CLOCK_ENABLE = 7,  // Clock Warp: Enable [0..1] default 0
-  P_CLOCK_DROP = 8,  // Clock Warp: Drop [0..63] default 30
-  P_CLOCK_SWEEP = 9,  // Clock Warp: Sweep [1..120] default 20
-  P_CLOCK_HOLD = 10,  // Clock Warp: Hold [0..63] default 0
-  P_WARP_MOTION = 11,  // Warp Zone: Motion [0..64] default 0
-  P_WAVE_ENABLE = 12,  // Wavetable: Enable [0..1] default 0
-  P_WAVE_SHAPE = 13,  // Wavetable: Shape [0..5] default 0
-  P_WAVE_LEVEL = 14,  // Wavetable: Level [1..15] default 12
-  P_UNI_ENABLE = 15,  // Unison: Enable [0..1] default 0
-  P_UNI_DETUNE = 16,  // Unison: Detune [1..32] default 8
-  P_VIB_ENABLE = 17,  // Vibrato: Enable [0..1] default 0
-  P_VIB_RATE = 18,  // Vibrato: Rate [1..200] default 50
-  P_VIB_DEPTH = 19,  // Vibrato: Depth [0..31] default 6
-  P_VIB_DELAY = 20,  // Vibrato: Delay [0..200] default 0
-  P_TREM_ENABLE = 21,  // Tremolo: Enable [0..1] default 0
-  P_TREM_RATE = 22,  // Tremolo: Rate [1..200] default 40
-  P_TREM_DEPTH = 23,  // Tremolo: Depth [0..15] default 5
-  P_NOISE_ENABLE = 24,  // Noise Blend: Enable [0..1] default 0
-  P_NOISE_PERIOD = 25,  // Noise Blend: Period [0..15] default 8
-  P_DRUM_TUNE = 26,  // Drums: Tune [50..200] default 100
-  P_DRUM_DECAY = 27,  // Drums: Decay [50..200] default 100
-  P_DRUM_BEND = 28,  // Drums: Bend [0..200] default 100
-  P_DRUM_NOISE = 29,  // Drums: Noise [0..14] default 7
-  P_DRUM_ROLL = 30,  // Drum FX: Roll [0..50] default 0
-  P_DRUM_FLAM = 31,  // Drum FX: Flam [0..30] default 0
-  P_DRUM_REVERSE = 32,  // Drum FX: Reverse [0..1] default 0
-  P_DRUM_CHAOS = 33,  // Drum FX: Chaos [0..63] default 0
-  P_ARP_MODE = 34,  // Auto FX: Arp [0..6] default 0
-  P_ARP_RATE = 35,  // Auto FX: Arp Rate [1..50] default 17
-  P_SWEEP_AMOUNT = 36,  // Auto FX: Sweep [0..64] default 32
-  P_RETRIG_RATE = 37,  // Auto FX: Retrigger [0..50] default 0
-  P_ENV_MODE = 38,  // Envelope: Mode [0..1] default 0
-  P_ENV_ATTACK = 39,  // Envelope: Attack [1..32] default 1
-  P_ENV_DECAY = 40,  // Envelope: Decay [1..32] default 26
-  P_ENV_SUSTAIN = 41,  // Envelope: Sustain [0..32] default 32
-  P_ENV_RELEASE = 42,  // Envelope: Release [1..32] default 19
-  P_GLIDE = 43,  // Pitch & Response: Glide [0..100] default 0
-  P_TRANSPOSE = 44,  // Pitch & Response: Transpose [0..48] default 24
-  P_MIX_NOISE = 45,  // Mixer: Noise [0..15] default 15
-  P_MIX_TONE = 46,  // Mixer: Tone [0..15] default 15
-  P_MIX_DRUM = 47,  // Mixer: Drums [0..15] default 15
-  P_TEMPERAMENT = 48,  // Tuning: Temperament [0..9] default 0
-  P_TEMPER_ROOT = 49,  // Tuning: Root [0..11] default 0
-  P_VEL_SENSE = 50,  // Pitch & Response: Velocity [0..1] default 1
+  P_BUZZ_PURE = 3,  // Buzzy Bass: Pure [0..1] default 0
+  P_BUZZ_DETUNE = 4,  // Buzzy Bass: Detune [0..64] default 32
+  P_WARP_MODE = 5,  // Warp Zone: Mode [0..9] default 0
+  P_WARP_RATE = 6,  // Warp Zone: Rate [1..120] default 30
+  P_WARP_DEPTH = 7,  // Warp Zone: Depth [1..63] default 20
+  P_CLOCK_ENABLE = 8,  // Clock Warp: Enable [0..1] default 0
+  P_CLOCK_DROP = 9,  // Clock Warp: Drop [0..63] default 30
+  P_CLOCK_SWEEP = 10,  // Clock Warp: Sweep [1..120] default 20
+  P_CLOCK_HOLD = 11,  // Clock Warp: Hold [0..63] default 0
+  P_WARP_MOTION = 12,  // Warp Zone: Motion [0..64] default 0
+  P_WAVE_ENABLE = 13,  // Wavetable: Enable [0..1] default 0
+  P_WAVE_SHAPE = 14,  // Wavetable: Shape [0..5] default 0
+  P_WAVE_LEVEL = 15,  // Wavetable: Level [1..15] default 12
+  P_UNI_ENABLE = 16,  // Unison: Enable [0..1] default 0
+  P_UNI_DETUNE = 17,  // Unison: Detune [1..32] default 8
+  P_VIB_ENABLE = 18,  // Vibrato: Enable [0..1] default 0
+  P_VIB_RATE = 19,  // Vibrato: Rate [1..200] default 50
+  P_VIB_DEPTH = 20,  // Vibrato: Depth [0..31] default 6
+  P_VIB_DELAY = 21,  // Vibrato: Delay [0..200] default 0
+  P_TREM_ENABLE = 22,  // Tremolo: Enable [0..1] default 0
+  P_TREM_RATE = 23,  // Tremolo: Rate [1..200] default 40
+  P_TREM_DEPTH = 24,  // Tremolo: Depth [0..15] default 5
+  P_NOISE_ENABLE = 25,  // Noise Blend: Enable [0..1] default 0
+  P_NOISE_PERIOD = 26,  // Noise Blend: Period [0..15] default 8
+  P_DRUM_TUNE = 27,  // Drums: Tune [50..200] default 100
+  P_DRUM_DECAY = 28,  // Drums: Decay [50..200] default 100
+  P_DRUM_BEND = 29,  // Drums: Bend [0..200] default 100
+  P_DRUM_NOISE = 30,  // Drums: Noise [0..14] default 7
+  P_DRUM_ROLL = 31,  // Drum FX: Roll [0..50] default 0
+  P_DRUM_FLAM = 32,  // Drum FX: Flam [0..30] default 0
+  P_DRUM_REVERSE = 33,  // Drum FX: Reverse [0..1] default 0
+  P_DRUM_CHAOS = 34,  // Drum FX: Chaos [0..63] default 0
+  P_ARP_MODE = 35,  // Auto FX: Arp [0..6] default 0
+  P_ARP_RATE = 36,  // Auto FX: Arp Rate [1..50] default 17
+  P_SWEEP_AMOUNT = 37,  // Auto FX: Sweep [0..64] default 32
+  P_RETRIG_RATE = 38,  // Auto FX: Retrigger [0..50] default 0
+  P_ENV_MODE = 39,  // Envelope: Mode [0..1] default 0
+  P_ENV_ATTACK = 40,  // Envelope: Attack [1..32] default 1
+  P_ENV_DECAY = 41,  // Envelope: Decay [1..32] default 26
+  P_ENV_SUSTAIN = 42,  // Envelope: Sustain [0..32] default 32
+  P_ENV_RELEASE = 43,  // Envelope: Release [1..32] default 19
+  P_GLIDE = 44,  // Pitch & Response: Glide [0..100] default 0
+  P_TRANSPOSE = 45,  // Pitch & Response: Transpose [0..48] default 24
+  P_MIX_NOISE = 46,  // Mixer: Noise [0..15] default 15
+  P_MIX_TONE = 47,  // Mixer: Tone [0..15] default 15
+  P_MIX_DRUM = 48,  // Mixer: Drums [0..15] default 15
+  P_TEMPERAMENT = 49,  // Tuning: Temperament [0..9] default 0
+  P_TEMPER_ROOT = 50,  // Tuning: Root [0..11] default 0
+  P_VEL_SENSE = 51,  // Pitch & Response: Velocity [0..1] default 1
 };
 
-static const uint8_t PARAM_MIN[NUM_PARAMS] PROGMEM = { 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 50, 50, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
-static const uint8_t PARAM_MAX[NUM_PARAMS] PROGMEM = { 1, 8, 3, 64, 9, 120, 63, 1, 63, 120, 63, 64, 1, 5, 15, 1, 32, 1, 200, 31, 200, 1, 200, 15, 1, 15, 200, 200, 200, 14, 50, 30, 1, 63, 6, 50, 64, 50, 1, 32, 32, 32, 32, 100, 48, 15, 15, 15, 9, 11, 1 };
-static const uint8_t PARAM_DEFAULT[NUM_PARAMS] PROGMEM = { 0, 1, 0, 32, 0, 30, 20, 0, 30, 20, 0, 0, 0, 0, 12, 0, 8, 0, 50, 6, 0, 0, 40, 5, 0, 8, 100, 100, 100, 7, 0, 0, 0, 0, 0, 17, 32, 0, 0, 1, 26, 32, 19, 0, 24, 15, 15, 15, 0, 0, 1 };
+static const uint8_t PARAM_MIN[NUM_PARAMS] PROGMEM = { 0, 1, 0, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 50, 50, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0 };
+static const uint8_t PARAM_MAX[NUM_PARAMS] PROGMEM = { 1, 8, 3, 1, 64, 9, 120, 63, 1, 63, 120, 63, 64, 1, 5, 15, 1, 32, 1, 200, 31, 200, 1, 200, 15, 1, 15, 200, 200, 200, 14, 50, 30, 1, 63, 6, 50, 64, 50, 1, 32, 32, 32, 32, 100, 48, 15, 15, 15, 9, 11, 1 };
+static const uint8_t PARAM_DEFAULT[NUM_PARAMS] PROGMEM = { 0, 1, 0, 0, 32, 0, 30, 20, 0, 30, 20, 0, 0, 0, 0, 12, 0, 8, 0, 50, 6, 0, 0, 40, 5, 0, 8, 100, 100, 100, 7, 0, 0, 0, 0, 0, 17, 32, 0, 0, 1, 26, 32, 19, 0, 24, 15, 15, 15, 0, 0, 1 };
 
 // Ticks between events for the re-strike controls (Drum Roll,
 // Retrigger), indexed by the parameter value. The tick is 100Hz, so
