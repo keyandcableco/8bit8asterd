@@ -661,9 +661,21 @@ static ushort g_lastMelodicPitch = 0;
 static int16_t bendVal[16];        // -8192..8191
 static uint8_t bendRange[16];      // semitones at full deflection
 static uint8_t rpnSel[16];         // last RPN selected; 0x7F is null
+// MPE mode. Under MPE a channel is a note's bend lane and nothing else, but
+// here the channel also picks the tone preset (chan % MAX_TONES), so an MPE
+// stream scattered one instrument across four envelopes -- two of them with
+// half-second attacks. On, every channel takes preset 0 and member channels
+// take the MPE bend range of 48. Set by a zone declaration or MPE:1.
+static bool mpeMode = false;
 
 static void bendReset() {
   for (uint8_t c = 0; c < 16; c++) { bendVal[c] = 0; bendRange[c] = 2; rpnSel[c] = 0x7F; }
+  mpeMode = false;
+}
+
+// Member channels (all but the master, channel 1) take the MPE default range.
+static void mpeRange() {
+  for (uint8_t c = 1; c < 16; c++) bendRange[c] = 48;
 }
 
 // Bend in hundredths of a semitone, split so the whole part shifts the note
@@ -783,7 +795,8 @@ public:
       tp.sustain = params[P_ENV_SUSTAIN];
       tp.rel     = params[P_ENV_RELEASE];
     } else {
-      memcpy_P(&tp, &tones[chan % MAX_TONES], sizeof(ToneParams));
+      // Under MPE the channel is a bend lane, not a preset selector.
+      memcpy_P(&tp, &tones[mpeMode ? 0 : (chan % MAX_TONES)], sizeof(ToneParams));
     }
 
     if (params[P_VEL_SENSE] == 0) {
@@ -2307,6 +2320,12 @@ static void handleCommand(char *cmd) {
     }
     Serial.println();
   }
+  else if (strncmp(cmd, "MPE:", 4) == 0) {
+    mpeMode = (cmd[4] != '0');
+    if (mpeMode) mpeRange();
+    Serial.print(F("MPE:"));
+    Serial.println(mpeMode ? 1 : 0);
+  }
   else if (strncmp(cmd, "XCLK:", 5) == 0) {
     clockUnlocked = (cmd[5] != '0');
     Serial.print(F("XCLK:"));
@@ -2670,7 +2689,10 @@ void setup() {
 // All Notes Off periodically, the unit drops off the bus mid-session and
 // uploads fail. This does the musical part of a reset and leaves USB alone.
 static void softReset() {
-  bendReset();     // Reset All Controllers includes bend and its range
+  // Centre the bends, but keep each channel's range and the MPE mode: this
+  // runs on All Notes Off, which the MIDI file player sends at every loop, and
+  // resetting the range there dropped an MPE stream back to two semitones.
+  for (uint8_t c = 0; c < 16; c++) bendVal[c] = 0;
   for (ushort i = 0; i < MAX_VOICES; i++) {
     voices[i].kill();
   }
@@ -2708,11 +2730,12 @@ void handleMidiMessage(midiEventPacket_t &rx) {
       if (rpnSel[ch] == 0) {
         bendRange[ch] = rx.byte3;                                   // MSB is whole semitones
         bendRetune(ch);
-      } else if (rpnSel[ch] == 6 && rx.byte3 > 0) {
-        // An MPE zone. Its member channels' range is implied at 48 rather
-        // than sent, so every channel takes it: the minichord and every
-        // MPE controller expect exactly that.
-        for (uint8_t c = 0; c < 16; c++) bendRange[c] = 48;
+      } else if (rpnSel[ch] == 6) {
+        // An MPE zone declaration: the member count, on the master channel.
+        // Non-zero turns the mode on with the implied member range of 48,
+        // which is never sent per channel; zero tears the zone down.
+        mpeMode = (rx.byte3 > 0);
+        if (mpeMode) mpeRange();
       }
     }
     else {

@@ -662,6 +662,10 @@
     <button class="btn" id="imgSave">Save Game</button>
     <input type="file" id="imgLoadInput" accept=".8b8,.json" style="display:none">
     <button class="btn" id="imgLoad">Load Game</button>
+    <div class="cc" style="margin-left:10px">
+      <div class="switch" id="mpeSw"><div class="led"></div></div>
+      <span class="cc-label">MPE</span>
+    </div>
   </div>
 
   <div class="bar">
@@ -2852,6 +2856,16 @@ function buildMidiFile(){
 
   const saveBtn = document.getElementById('imgSave');
   if (saveBtn) saveBtn.onclick = saveImage;
+
+  // MPE input. The emulator remaps its controller's channels into lanes, so it
+  // owns the switch there; the hardware panel only has to tell the firmware.
+  const mpeSw = document.getElementById('mpeSw');
+  if (mpeSw) mpeSw.onclick = () => {
+    const on = !mpeSw.classList.contains('active');
+    if (typeof setMpe === 'function') { setMpe(on); return; }
+    mpeSw.classList.toggle('active', on);
+    send('MPE:' + (on ? 1 : 0));
+  };
 
   const loadBtn = document.getElementById('imgLoad');
   const loadIn  = document.getElementById('imgLoadInput');
