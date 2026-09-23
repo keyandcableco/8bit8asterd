@@ -663,6 +663,10 @@
     <button class="btn" id="imgSave">Save Game</button>
     <input type="file" id="imgLoadInput" accept=".8b8,.json" style="display:none">
     <button class="btn" id="imgLoad">Load Game</button>
+    <div class="cc" style="margin-left:10px">
+      <div class="switch" id="mpeSw"><div class="led"></div></div>
+      <span class="cc-label">MPE</span>
+    </div>
   </div>
 
   <div class="bar">
@@ -1164,16 +1168,106 @@ function stopNote(note, chan){
 // secure context, so https or localhost.
 let midiAccess = null;
 
+/* ---- MPE-aware input ---- */
+// A controller's ports each number their channels from 1, so two ports merged
+// as they arrive can put two voices on one channel. The minichord's default
+// layout does exactly that: chord voices on channels 2-5 of one port, strings
+// on 2-13 of the other. Sharing a channel means sharing a bend, and a note-off
+// meant for one voice can land on the other.
+//
+// So with MPE on, each (port, channel) gets its own lane on the firmware, the
+// master channel staying shared. Lanes skip channel 10, the drum channel, so a
+// string assigned there is played as a note. Off, channels pass through as
+// they are, and channel 10 is drums as usual.
+let mpeOn = false;
+const LANES = [1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15];
+const laneMap = new Map();                 // port * 16 + channel -> lane
+const laneAge = new Array(16).fill(0);
+const laneNotes = LANES.reduce((o, l) => (o[l] = new Set(), o), {});
+let laneClock = 0;
+const portIds = new Map();
+let nextPort = 0;
+const bendKeys = new Set();                // member channels seen bending
+const rpnLsb = {}, rpnMsb = {};
+
+function laneFor(port, ch){
+  if (!mpeOn || ch === 0) return ch;
+  const key = port * 16 + ch;
+  let lane = laneMap.get(key);
+  if (lane === undefined){
+    // A free lane first; failing that the one used longest ago, released
+    // before it is handed on so nothing it held is left sounding.
+    const taken = new Set(laneMap.values());
+    lane = LANES.find(l => !taken.has(l));
+    if (lane === undefined){
+      lane = LANES.reduce((a, b) => laneAge[a] <= laneAge[b] ? a : b);
+      for (const n of laneNotes[lane]) stopNote(n, lane);
+      laneNotes[lane].clear();
+      for (const [k, v] of laneMap) if (v === lane) laneMap.delete(k);
+    }
+    laneMap.set(key, lane);
+  }
+  laneAge[lane] = ++laneClock;
+  return lane;
+}
+
+function setMpe(on){
+  if (on === mpeOn) return;
+  // Everything is released first: the channel numbering is about to change,
+  // and a note started under one must not wait for a note-off under the other.
+  if (ready) for (let c = 0; c < 16; c++)
+    Module.ccall('emu_cc', null, ['number','number','number'], [c, 123, 0]);
+  mpeOn = on;
+  laneMap.clear(); bendKeys.clear();
+  for (const l of LANES) laneNotes[l].clear();
+  send('MPE:' + (on ? 1 : 0));
+  const sw = document.getElementById('mpeSw');
+  if (sw) sw.classList.toggle('active', on);
+  log('sys', on ? 'MPE input on: a lane per voice, each with its own bend.'
+                : 'MPE input off.');
+}
+
 function attachMidiInput(inp){
+  if (!portIds.has(inp.id)) portIds.set(inp.id, nextPort++);
+  const port = portIds.get(inp.id);
   inp.onmidimessage = m => {
     const st = m.data[0], d1 = m.data[1], d2 = m.data[2];
     const ch = st & 0x0F, cmd = st & 0xF0;
-    if (cmd === 0x90 && d2 > 0) playNote(d1, d2, ch);
-    else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) stopNote(d1, ch);
+
+    if (cmd === 0xB0){
+      // Watch for the zone declaration (RPN 6) so MPE turns on by itself when
+      // the controller announces it. The firmware also reads it.
+      const k = port * 16 + ch;
+      if (d1 === 101) rpnMsb[k] = d2;
+      else if (d1 === 100) rpnLsb[k] = d2;
+      else if (d1 === 6 && rpnMsb[k] === 0 && rpnLsb[k] === 6) setMpe(d2 > 0);
+    }
+    else if (cmd === 0xE0 && !mpeOn && ch !== 0){
+      // Bends arriving on two or more member channels is an MPE stream, even
+      // if its zone message went by before this page was listening. A single
+      // keyboard's wheel stays on one channel, so it does not trip this.
+      bendKeys.add(port * 16 + ch);
+      if (bendKeys.size >= 2) setMpe(true);
+    }
+
+    const lane = laneFor(port, ch);
+    if (cmd === 0x90 && d2 > 0){
+      playNote(d1, d2, lane);
+      if (laneNotes[lane]) laneNotes[lane].add(d1);
+    }
+    else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)){
+      stopNote(d1, lane);
+      if (laneNotes[lane]) laneNotes[lane].delete(d1);
+    }
     else if (cmd === 0xB0 && ready){
-      // Control changes go to the firmware exactly as they would on the
-      // hardware, so the CC map and MIDI Learn behave identically here.
-      Module.ccall('emu_cc', null, ['number','number','number'], [ch, d1, d2]);
+      // Control changes go to the firmware as they would on the hardware, so
+      // the CC map and MIDI Learn behave identically, RPNs included.
+      Module.ccall('emu_cc', null, ['number','number','number'], [lane, d1, d2]);
+    }
+    else if (cmd === 0xE0 && ready){
+      // Pitch bend on the voice's own lane: every AY voice has its own tone
+      // period, so each glide or bend moves only its note.
+      Module.ccall('emu_midi_raw', null, ['number','number','number'], [0xE0 | lane, d1, d2]);
     }
   };
 }
@@ -1182,11 +1276,16 @@ function refreshMidiInputs(){
   if (!midiAccess) return [];
   const names = [];
   for (const inp of midiAccess.inputs.values()){
-    attachMidiInput(inp);
+    // Open explicitly. A port another application already holds is not opened
+    // just by attaching a handler, so its messages never arrive -- a MIDI
+    // monitor sees them and the panel stays silent. open() is idempotent.
+    const p = inp.open();
+    if (p && p.then) p.then(() => attachMidiInput(inp)).catch(() => {});
+    else attachMidiInput(inp);
     names.push(inp.name || 'unnamed');
   }
   const el = document.getElementById('midiStatus');
-  if (el) el.textContent = names.length ? names[0].slice(0, 18) : 'none';
+  if (el) el.textContent = names.length ? (names.length + ' in') : 'none';
   return names;
 }
 
@@ -2932,6 +3031,16 @@ function buildMidiFile(){
 
   const saveBtn = document.getElementById('imgSave');
   if (saveBtn) saveBtn.onclick = saveImage;
+
+  // MPE input. The emulator remaps its controller's channels into lanes, so it
+  // owns the switch there; the hardware panel only has to tell the firmware.
+  const mpeSw = document.getElementById('mpeSw');
+  if (mpeSw) mpeSw.onclick = () => {
+    const on = !mpeSw.classList.contains('active');
+    if (typeof setMpe === 'function') { setMpe(on); return; }
+    mpeSw.classList.toggle('active', on);
+    send('MPE:' + (on ? 1 : 0));
+  };
 
   const loadBtn = document.getElementById('imgLoad');
   const loadIn  = document.getElementById('imgLoadInput');

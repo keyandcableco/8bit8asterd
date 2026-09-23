@@ -649,12 +649,49 @@ static const ToneParams tones[MAX_TONES] PROGMEM = {
 // new note can slide in from wherever the last one landed.
 static ushort g_lastMelodicPitch = 0;
 
+// ---------------------------------------------------------------------------
+// Pitch bend, per channel
+// ---------------------------------------------------------------------------
+// One bend per channel is what MIDI 1.0 offers. Under MPE a note has a channel
+// to itself, so a per-channel bend is a per-note bend, and every AY voice has
+// its own tone period to receive it. bendRange defaults to the MIDI 1.0 two
+// semitones; an RPN 0 sets it, and an MPE zone declaration (RPN 6) sets the
+// MPE default of 48 on every channel, since a member channel's range is
+// otherwise implied rather than sent.
+static int16_t bendVal[16];        // -8192..8191
+static uint8_t bendRange[16];      // semitones at full deflection
+static uint8_t rpnSel[16];         // last RPN selected; 0x7F is null
+// MPE mode. Under MPE a channel is a note's bend lane and nothing else, but
+// here the channel also picks the tone preset (chan % MAX_TONES), so an MPE
+// stream scattered one instrument across four envelopes -- two of them with
+// half-second attacks. On, every channel takes preset 0 and member channels
+// take the MPE bend range of 48. Set by a zone declaration or MPE:1.
+static bool mpeMode = false;
+
+static void bendReset() {
+  for (uint8_t c = 0; c < 16; c++) { bendVal[c] = 0; bendRange[c] = 2; rpnSel[c] = 0x7F; }
+  mpeMode = false;
+}
+
+// Member channels (all but the master, channel 1) take the MPE default range.
+static void mpeRange() {
+  for (uint8_t c = 1; c < 16; c++) bendRange[c] = 48;
+}
+
+// Bend in hundredths of a semitone, split so the whole part shifts the note
+// and the remainder goes through the same cent table the temperaments use.
+static int16_t bendCents(uint8_t chan) {
+  return (int16_t)(((int32_t)bendRange[chan & 15] * bendVal[chan & 15] * 100L) / 8192L);
+}
+
 class Voice {
 public:
   ushort m_chan;  // Index to psg channel 
   ushort m_pitch;   // current (glide-slewed) tone divisor
   ushort m_target;  // divisor of the note actually requested
   uint8_t m_noteIdx; // index into note_table, for semitone-based arpeggio
+  uint8_t m_midiChan; // MIDI channel the note arrived on: bend is per channel,
+                      // and under MPE that makes it per note
   uint16_t m_age;   // ticks since note start (delayed vibrato, sweep, retrig)
   int m_attack, m_ampl, m_ampl_top, m_decay, m_sustain, m_release, m_shape;
   static const int AMPL_MAX = 1023;
@@ -689,6 +726,16 @@ public:
   // note can be retuned in place when either of those changes, instead of
   // keeping the pitch it happened to be born with.
   void setPitchFor(note_t note) {
+    // The temperament is applied to the note as written, and the bend on top
+    // as a smooth shift. Moving the note number by the bend's whole semitones
+    // first would retune a bent C as a C sharp, which in an unequal
+    // temperament is not a semitone away: a bend would respell rather than
+    // slide, and a chord bent together would change shape.
+    int16_t bc = bendCents(m_midiChan);
+    int bWhole = bc / 100;
+    int bFrac  = bc - bWhole * 100;
+    if (bFrac > 50)  { bWhole++; bFrac -= 100; }
+    if (bFrac < -50) { bWhole--; bFrac += 100; }
     int n = (int)note - MIDI_MIN + (int)params[P_TRANSPOSE] - 24;
     if (n < 0) n = 0;
     if (n >= (int)N_NOTES) n = (int)N_NOTES - 1;
@@ -710,9 +757,31 @@ public:
       if (d > 4095) d = 4095;
       m_target = (ushort)d;
     }
+    if (bWhole != 0) {
+      // Whole semitones as the equal-tempered ratio between two entries of
+      // the note table, so a semitone of bend is always a hundred cents.
+      int k = n + bWhole;
+      if (k < 0) k = 0;
+      if (k >= (int)N_NOTES) k = (int)N_NOTES - 1;
+      uint32_t d = ((uint32_t)m_target * pgm_read_word(&note_table[k])
+                    + (pgm_read_word(&note_table[n]) / 2)) / pgm_read_word(&note_table[n]);
+      if (d < 1) d = 1;
+      if (d > 4095) d = 4095;
+      m_target = (ushort)d;
+    }
+    if (bFrac != 0) {
+      // The remainder, within half a semitone, so it always fits the table's
+      // span whatever the temperament added.
+      uint16_t factor = pgm_read_word(&temperFactor[bFrac + TEMPER_CENT_SPAN]);
+      uint32_t d = (((uint32_t)m_target * factor) + 16384UL) >> 15;
+      if (d < 1) d = 1;
+      if (d > 4095) d = 4095;
+      m_target = (ushort)d;
+    }
   }
 
   void start(note_t note, midictrl_t vel, midictrl_t chan) {
+    m_midiChan = (uint8_t)(chan & 15);
     // Full level unless a drawbar stop overrides it after this returns. Set
     // here rather than only where the voice is constructed, so a voice that
     // once carried a stop does not stay quiet when reused for a plain note.
@@ -726,7 +795,8 @@ public:
       tp.sustain = params[P_ENV_SUSTAIN];
       tp.rel     = params[P_ENV_RELEASE];
     } else {
-      memcpy_P(&tp, &tones[chan % MAX_TONES], sizeof(ToneParams));
+      // Under MPE the channel is a bend lane, not a preset selector.
+      memcpy_P(&tp, &tones[mpeMode ? 0 : (chan % MAX_TONES)], sizeof(ToneParams));
     }
 
     if (params[P_VEL_SENSE] == 0) {
@@ -1479,21 +1549,41 @@ static bool startPercussion(note_t note) {
   return true;
 }
     
-static bool stopNote(ushort idx) {
+// A bend on a channel moves every voice that channel started, the same way
+// transpose and temperament retune held notes.
+static void bendRetune(uint8_t ch) {
+  for (uint8_t v = 0; v < MAX_VOICES; v++) {
+    if (m_playing[v] == NO_NOTE || m_playing[v] == PERC_NOTE) continue;
+    if (voices[v].m_midiChan != (ch & 15) || !voices[v].isPlaying()) continue;
+    voices[v].setPitchFor(MIDI_MIN + m_playing[v]);
+  }
+}
+
+static bool stopNote(ushort idx, midictrl_t chan) {
   uint8_t v = m_voiceNo[idx];
   if (v != NO_VOICE && m_playing[v] != NO_NOTE) {
     // Sweep every voice carrying this note: the unison twin and any drawbar
     // stops. m_voiceNo only ever knows about the lead one, so anything else
     // would be left ringing with nothing pointing at it.
+    // Sweep every voice carrying this note: the unison twin and any drawbar
+    // stops. m_voiceNo only ever knows about the lead one, so anything else
+    // would be left ringing with nothing pointing at it.
+    // Only the voices this channel's note owns. Another channel holding the
+    // same number keeps sounding, and m_voiceNo is re-pointed at one of its
+    // voices so the entry check still finds it.
+    bool any = false;
+    uint8_t remain = NO_VOICE;
     for (uint8_t u = 0; u < MAX_VOICES; u++) {
       if (m_playing[u] != idx) continue;
+      if (voices[u].m_midiChan != (chan & 15)) { remain = u; continue; }
       voices[u].stop();
       m_playing[u] = NO_NOTE;
       voices[u].m_partner = NO_VOICE;
       voices[u].m_level = 15;      // back to full for whatever reuses it
+      any = true;
     }
-    m_voiceNo[idx] = NO_VOICE;
-    return true;
+    m_voiceNo[idx] = remain;
+    return any;
   }
   return false;
 }
@@ -1570,7 +1660,7 @@ static void noteOff(midictrl_t chan, note_t note, midictrl_t vel) {
   m_velocity[idx] = 0;
   updateRequestedNotes();
     
-  if (stopNote(idx)) {
+  if (stopNote(idx, chan)) {
     restartANote();
   }
 }
@@ -1597,8 +1687,13 @@ static void noteOn(midictrl_t chan, note_t note, midictrl_t vel) {
 
   ushort idx = note - MIDI_MIN;
     
-  if (m_voiceNo[idx] != NO_VOICE) {
-    return; // Already playing. Ignore this request.
+  // Already sounding on THIS channel: ignore. On another channel it is a
+  // different note that happens to share a number, which is exactly what an
+  // MPE source sends when its voices land on the same pitch, and what any
+  // multi-channel source may do. Keying by number alone dropped the second.
+  for (uint8_t v = 0; v < MAX_VOICES; v++) {
+    if (m_playing[v] == idx && voices[v].m_midiChan == (chan & 15) && voices[v].isPlaying())
+      return;
   }
 
   m_requestMap[idx/8] |= 1 << (idx & 7);
@@ -2225,6 +2320,12 @@ static void handleCommand(char *cmd) {
     }
     Serial.println();
   }
+  else if (strncmp(cmd, "MPE:", 4) == 0) {
+    mpeMode = (cmd[4] != '0');
+    if (mpeMode) mpeRange();
+    Serial.print(F("MPE:"));
+    Serial.println(mpeMode ? 1 : 0);
+  }
   else if (strncmp(cmd, "XCLK:", 5) == 0) {
     clockUnlocked = (cmd[5] != '0');
     Serial.print(F("XCLK:"));
@@ -2514,6 +2615,7 @@ void setup() {
   // so the high-water reading covers the whole run.
   paintFreeRam();
   waveTimerInit();
+  bendReset();
 
   // Hold in reset while we set up the reset
   pinMode(nRESET, OUTPUT);
@@ -2587,6 +2689,10 @@ void setup() {
 // All Notes Off periodically, the unit drops off the bus mid-session and
 // uploads fail. This does the musical part of a reset and leaves USB alone.
 static void softReset() {
+  // Centre the bends, but keep each channel's range and the MPE mode: this
+  // runs on All Notes Off, which the MIDI file player sends at every loop, and
+  // resetting the range there dropped an MPE stream back to two semitones.
+  for (uint8_t c = 0; c < 16; c++) bendVal[c] = 0;
   for (ushort i = 0; i < MAX_VOICES; i++) {
     voices[i].kill();
   }
@@ -2608,9 +2714,29 @@ void handleMidiMessage(midiEventPacket_t &rx) {
   else if (rx.header==0x8) {// Note off
     noteOff(rx.byte1 & 0xF, rx.byte2, rx.byte3);
   }
+  else if (rx.header==0xE) {// Pitch bend, 14-bit, centred at 8192
+    uint8_t ch = rx.byte1 & 0x0F;
+    bendVal[ch] = (int16_t)(((uint16_t)rx.byte3 << 7) | rx.byte2) - 8192;
+    bendRetune(ch);
+  }
   else if (rx.header==0xB) {// Control Change
+    uint8_t ch = rx.byte1 & 0x0F;
     if (rx.byte2 == 0x78 || rx.byte2 == 0x79 || rx.byte2 == 0x7B) {// AllSoundOff, ResetAllControllers, or AllNotesOff
       softReset();
+    }
+    else if (rx.byte2 == 101) { rpnSel[ch] = (rx.byte3 == 0x7F) ? 0x7F : (uint8_t)(rpnSel[ch] & 0x7F); }
+    else if (rx.byte2 == 100) { rpnSel[ch] = rx.byte3; }           // RPN LSB: 0 = bend range, 6 = MPE zone
+    else if (rx.byte2 == 6 && rpnSel[ch] != 0x7F) {                 // data entry for the selected RPN
+      if (rpnSel[ch] == 0) {
+        bendRange[ch] = rx.byte3;                                   // MSB is whole semitones
+        bendRetune(ch);
+      } else if (rpnSel[ch] == 6) {
+        // An MPE zone declaration: the member count, on the master channel.
+        // Non-zero turns the mode on with the implied member range of 48,
+        // which is never sent per channel; zero tears the zone down.
+        mpeMode = (rx.byte3 > 0);
+        if (mpeMode) mpeRange();
+      }
     }
     else {
       handleControlChange(rx.byte2, rx.byte3);
