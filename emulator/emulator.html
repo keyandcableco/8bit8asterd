@@ -1164,10 +1164,19 @@ function stopNote(note, chan){
 // secure context, so https or localhost.
 let midiAccess = null;
 
+let lastNote = {};        // key -> timestamp, to drop a mirrored duplicate
 function attachMidiInput(inp){
   inp.onmidimessage = m => {
     const st = m.data[0], d1 = m.data[1], d2 = m.data[2];
     const ch = st & 0x0F, cmd = st & 0xF0;
+    // A controller with two ports may mirror its notes on both. Drop a repeat
+    // of the same note and channel within 4ms so it is not played twice.
+    if (cmd === 0x90 || cmd === 0x80){
+      const key = cmd + ':' + ch + ':' + d1;
+      const now = (performance.now ? performance.now() : Date.now());
+      if (lastNote[key] && now - lastNote[key] < 4) return;
+      lastNote[key] = now;
+    }
     if (cmd === 0x90 && d2 > 0) playNote(d1, d2, ch);
     else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) stopNote(d1, ch);
     else if (cmd === 0xB0 && ready){
@@ -1189,11 +1198,16 @@ function refreshMidiInputs(){
   if (!midiAccess) return [];
   const names = [];
   for (const inp of midiAccess.inputs.values()){
-    attachMidiInput(inp);
+    // Open explicitly. A port another application already holds is not opened
+    // just by attaching a handler, so its messages never arrive -- a MIDI
+    // monitor sees them and the panel stays silent. open() is idempotent.
+    const p = inp.open();
+    if (p && p.then) p.then(() => attachMidiInput(inp)).catch(() => {});
+    else attachMidiInput(inp);
     names.push(inp.name || 'unnamed');
   }
   const el = document.getElementById('midiStatus');
-  if (el) el.textContent = names.length ? names[0].slice(0, 18) : 'none';
+  if (el) el.textContent = names.length ? (names.length + ' in') : 'none';
   return names;
 }
 
