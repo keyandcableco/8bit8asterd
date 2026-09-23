@@ -684,6 +684,20 @@ static int16_t bendCents(uint8_t chan) {
   return (int16_t)(((int32_t)bendRange[chan & 15] * bendVal[chan & 15] * 100L) / 8192L);
 }
 
+// ---------------------------------------------------------------------------
+// Chord tuning, per pitch class
+// ---------------------------------------------------------------------------
+// A chord tone is a MIDI note, so it can only land on a pitch of the current
+// temperament. A 9:7 third is 35 cents sharp of E and no temperament has it.
+// The panel fills this table from the chord it is holding: cents from equal
+// temperament for each pitch class, so the harp's strings pick up the same
+// tuning in every octave. While it is on the temperament is set aside, since
+// the ratios are measured from an equal-tempered root and stacking the two
+// would move the chord off its ratios. Kept by pitch class so it costs twelve
+// bytes rather than one per note.
+static bool   pcTuneOn = false;
+static int8_t pcCents[12];
+
 class Voice {
 public:
   ushort m_chan;  // Index to psg channel 
@@ -743,7 +757,7 @@ public:
     m_target = pgm_read_word(&note_table[n]);
 
     uint8_t temper = params[P_TEMPERAMENT];
-    if (temper > 0 && temper < NUM_TEMPERAMENTS) {
+    if (!pcTuneOn && temper > 0 && temper < NUM_TEMPERAMENTS) {
       uint8_t root = params[P_TEMPER_ROOT];
       uint8_t pc   = (uint8_t)((((MIDI_MIN + n) % 12) + 12 - root) % 12);
       int8_t  c    = (int8_t)pgm_read_byte(&temperCents[temper][pc]);
@@ -777,6 +791,20 @@ public:
       if (d < 1) d = 1;
       if (d > 4095) d = 4095;
       m_target = (ushort)d;
+    }
+    if (pcTuneOn) {
+      // The chord's own tuning for this pitch class, as its own step so it
+      // cannot push the bend's remainder out of the table's span.
+      int c = pcCents[note % 12];
+      if (c > TEMPER_CENT_SPAN)  c = TEMPER_CENT_SPAN;
+      if (c < -TEMPER_CENT_SPAN) c = -TEMPER_CENT_SPAN;
+      if (c != 0) {
+        uint16_t factor = pgm_read_word(&temperFactor[c + TEMPER_CENT_SPAN]);
+        uint32_t d = (((uint32_t)m_target * factor) + 16384UL) >> 15;
+        if (d < 1) d = 1;
+        if (d > 4095) d = 4095;
+        m_target = (ushort)d;
+      }
     }
   }
 
@@ -2320,6 +2348,28 @@ static void handleCommand(char *cmd) {
     }
     Serial.println();
   }
+  else if (strncmp(cmd, "PCT:", 4) == 0) {
+    // PCT:off, or twelve comma-separated cents from equal temperament, one
+    // per pitch class from C. Sounding notes move at once, so a held chord
+    // can be heard to change tuning rather than restart.
+    if (strcmp(cmd + 4, "off") == 0) {
+      pcTuneOn = false;
+    } else {
+      const char *q = cmd + 4;
+      for (uint8_t i = 0; i < 12; i++) {
+        pcCents[i] = (int8_t)atoi(q);
+        while (*q && *q != ',') q++;
+        if (*q == ',') q++;
+      }
+      pcTuneOn = true;
+    }
+    for (uint8_t v = 0; v < MAX_VOICES; v++) {
+      if (m_playing[v] == NO_NOTE || m_playing[v] == PERC_NOTE) continue;
+      if (voices[v].isPlaying()) voices[v].setPitchFor(MIDI_MIN + m_playing[v]);
+    }
+    Serial.print(F("PCT:"));
+    Serial.println(pcTuneOn ? 1 : 0);
+  }
   else if (strncmp(cmd, "MPE:", 4) == 0) {
     mpeMode = (cmd[4] != '0');
     if (mpeMode) mpeRange();
@@ -2616,6 +2666,9 @@ void setup() {
   paintFreeRam();
   waveTimerInit();
   bendReset();
+  // Power-up clears this on the hardware, but the emulator re-runs setup()
+  // on every restart of the audio without clearing globals.
+  pcTuneOn = false;
 
   // Hold in reset while we set up the reset
   pinMode(nRESET, OUTPUT);
