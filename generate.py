@@ -1148,6 +1148,8 @@ HTML_TEMPLATE = r"""<!doctype html>
   /* ---- MIDI learn ---- */
   body.learning .ctl .name{ cursor:pointer; color:var(--warn); text-decoration:underline dotted; }
   body.learning .ctl .name:hover{ color:var(--accent-lit); }
+  /* MPE lights the way MIDI Learn does when it is on. */
+  #mpeSw.active{ color:var(--accent-lit); }
   .ctl .name.armed{ color:var(--accent-lit) !important; }
   .ctl .cc{
     font-family:var(--pixel); font-size:calc(6px * var(--ui-scale));
@@ -1301,15 +1303,12 @@ __TRANSPORT_UI__
     <button class="btn" id="imgSave">Save Game</button>
     <input type="file" id="imgLoadInput" accept=".8b8,.json" style="display:none">
     <button class="btn" id="imgLoad">Load Game</button>
-    <div class="cc" style="margin-left:10px">
-      <div class="switch" id="mpeSw"><div class="led"></div></div>
-      <span class="cc-label">MPE</span>
-    </div>
   </div>
 
   <div class="bar">
     <button class="btn" id="settingsBtn">Settings</button>
     <span class="spacer"></span>
+    <button class="btn" id="mpeSw">MPE</button>
     <button class="btn" id="learnBtn">MIDI Learn</button>
     <button class="btn" id="diagBtn">Diag</button>
   </div>
