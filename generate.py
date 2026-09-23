@@ -1150,6 +1150,17 @@ HTML_TEMPLATE = r"""<!doctype html>
   body.learning .ctl .name:hover{ color:var(--accent-lit); }
   /* MPE lights the way MIDI Learn does when it is on. */
   #mpeSw.active{ color:var(--accent-lit); }
+  .pw-msg{ margin:0 13px 10px; font-family:var(--pixel);
+           font-size:calc(8px * var(--ui-scale)); line-height:1.6; }
+  .pw-msg.ok{ color:var(--accent-lit); }
+  .pw-msg.err{ color:var(--warn); }
+  /* An unlocked switch pulses until first used: it appears in the chord
+     matrix, a section away from the password box. */
+  @keyframes unlockPulse{
+    0%, 100% { box-shadow:0 0 0 0 var(--accent-lit); }
+    50%      { box-shadow:0 0 0 4px var(--accent-lit); }
+  }
+  .switch.fresh{ animation:unlockPulse 1.2s ease-in-out infinite; }
   .ctl .name.armed{ color:var(--accent-lit) !important; }
   .ctl .cc{
     font-family:var(--pixel); font-size:calc(6px * var(--ui-scale));
@@ -1370,6 +1381,10 @@ __TRANSPORT_UI__
           <div class="switch" id="barrySw"><div class="led"></div></div>
           <span class="cc-label">Barry</span>
         </div>
+        <div class="cc" id="septCell" hidden>
+          <div class="switch" id="septSw"><div class="led"></div></div>
+          <span class="cc-label">Septimal</span>
+        </div>
         <div class="cc">
           <select id="chordLayoutSel">
             <option value="0">Standard</option>
@@ -1565,6 +1580,7 @@ __TRANSPORT_UI__
           <span class="cc-label">Generate</span>
         </div>
       </div>
+      <p class="pw-msg" id="pwMsg" hidden></p>
       <p class="section-blurb">A password carries the settings alone &mdash; short enough to read aloud or print on a card. Save Game carries everything else.</p>
     </div>
 
@@ -2042,6 +2058,25 @@ const CHORDS = {
   '12':  { tones: [0,3,7,10], suffix: 'm7'    },
   '012': { tones: [0,4,8],    suffix: 'aug'   }
 };
+
+// Septimal counterparts of the same seven chords, unlocked by a password.
+// Each keeps the standard chord's notes where it can and moves them to 7-limit
+// just ratios, given as cents from equal temperament per tone: the firmware
+// has no pitch between the MIDI notes, so the panel sends these as a tuning
+// table and the notes are retuned in place. That is what makes the comparison
+// work: flip the switch under a held chord and only the tuning changes.
+// The augmented slot has no septimal triad of its own, so it becomes the
+// utonal seventh, the one chord here whose notes change.
+const SEPT = {
+  '0':   { tones: [0,4,7],    cents: [0, 35, 2],       name: 'supermajor',     ratio: '14:18:21' },
+  '1':   { tones: [0,3,7],    cents: [0,-33, 2],       name: 'subminor',       ratio: '6:7:9' },
+  '2':   { tones: [0,4,7,10], cents: [0,-14, 2,-31],   name: 'harmonic 7th',   ratio: '4:5:6:7' },
+  '01':  { tones: [0,3,6],    cents: [0,-33,-17],      name: 'utonal',         ratio: '1/7:1/6:1/5' },
+  '02':  { tones: [0,4,7,11], cents: [0, 35, 2, 37],   name: 'supermajor 7th', ratio: '14:18:21:27' },
+  '12':  { tones: [0,3,7,10], cents: [0,-33, 2,-31],   name: 'subminor 7th',   ratio: '12:14:18:21' },
+  '012': { tones: [0,3,6,10], cents: [0,-33,-17,-31],  name: 'utonal 7th',     ratio: '1/7:1/6:1/5:1/4' }
+};
+const SEPT_ROW_SHORT = ['sup', 'sub', 'h7'];
 // ---- Harp modes -----------------------------------------------------------
 // Follows the scale modes I wrote for the minichord (upstream PR #125). The
 // chord mode is the original behaviour: the strings ARE the chord, which is
@@ -2168,6 +2203,7 @@ function harpScaleFor(){
 }
 
 let sharpOn = false, latchOn = false, barryOn = false, stackOn = false;
+let septOn = false, septUnlocked = false;
 let gestureRows = null;   // rows added by the current press-and-drag
 let chordOct = 0, strumOct = 0, kbOct = 0;
 let inversion = 0, spacing = 0;
@@ -2227,6 +2263,10 @@ function specForKey(key){
   if (altLayout){
     const a = ALT_CHORDS[key];
     return a ? { tones: a.tones, suffix: a.suffix } : null;
+  }
+  if (septOn){
+    const t = SEPT[key];
+    return t ? { tones: t.tones, suffix: ' ' + t.name + ' \u00b7 ' + t.ratio } : null;
   }
   const c = CHORDS[key];
   if (!c) return null;
@@ -2341,10 +2381,41 @@ function revoice(){
   if (currentKey()) refreshChord();
 }
 
+// Cents from equal temperament for each pitch class of the chord the matrix
+// is on, or off. By pitch class, so the harp's strings in every octave share
+// the chord's tuning. Only sent once the switch has been unlocked, so nobody
+// else pays a line of traffic per chord.
+// Shows the septimal switch. Remembered per browser, so the password is needed
+// once. The switch pulses until it is first used, since it appears in the
+// chord matrix and the password box is elsewhere.
+function unlockSeptimal(quiet){
+  septUnlocked = true;
+  try { localStorage.setItem('8b8.septimal', '1'); } catch(e){}
+  const cell = document.getElementById('septCell');
+  if (cell) cell.hidden = false;
+  const sw = document.getElementById('septSw');
+  if (sw && !quiet) sw.classList.add('fresh');
+}
+
+function septTable(){
+  if (!septOn || altLayout) return 'off';
+  const key = currentKey() || lastHarpKey;
+  const t = key && SEPT[key];
+  if (!t) return 'off';
+  const pcs = new Array(12).fill(0);
+  const r = rootPc(activeRoot);
+  t.tones.forEach((tone, i) => { pcs[(r + tone) % 12] = t.cents[i]; });
+  return pcs.join(',');
+}
+function sendSeptTable(){
+  if (septUnlocked) send('PCT:' + septTable());
+}
+
 function refreshChord(){
   const spec = chordSpec();
   if (!spec) return;
   releaseChord();
+  sendSeptTable();
   chordNotes = chordFor();
   chordNotes.forEach(n => playNote(n, 100, 0));
   updateStrum();
@@ -2358,10 +2429,16 @@ function refreshChord(){
 function relabelChords(){
   document.querySelectorAll('.chordbtn').forEach(b => {
     const ri = b.dataset.root | 0, qi = b.dataset.q | 0;
-    b.textContent = rootName(ri) + (altLayout ? ALT_ROW_SUFFIX[qi] : QUALITY[qi].suffix);
+    b.textContent = rootName(ri) + (altLayout ? ALT_ROW_SUFFIX[qi]
+                                  : septOn ? SEPT_ROW_SHORT[qi] : QUALITY[qi].suffix);
   });
+  // Barry rewrites the standard triads, so it has no effect in the alternate
+  // layout or while the septimal set is on; the septimal switch has none in
+  // the alternate layout.
   const sw = document.getElementById('barrySw');
-  if (sw) sw.style.opacity = altLayout ? '0.35' : '';   // no effect here
+  if (sw) sw.style.opacity = (altLayout || septOn) ? '0.35' : '';
+  const ss = document.getElementById('septSw');
+  if (ss) ss.style.opacity = altLayout ? '0.35' : '';
 }
 
 // What Rate, Depth and Motion actually do, per mode. Three controls cover
@@ -2802,6 +2879,31 @@ function buildPlaySurface(){
     barrySw.classList.toggle('active', barryOn);
     revoice();
   };
+
+  const septSw = document.getElementById('septSw');
+  if (septSw) septSw.onclick = () => {
+    septSw.classList.remove('fresh');
+    const before = chordSpec();
+    septOn = !septOn;
+    septSw.classList.toggle('active', septOn);
+    relabelChords();
+    const after = chordSpec();
+    // Where the notes stay the same, the tuning moves under the held chord
+    // rather than the chord restarting, which is the comparison worth
+    // hearing. A chord whose notes change -- the augmented slot, or a Barry
+    // chord -- is formed again.
+    if (currentKey() && before && after && before.tones.join() === after.tones.join()){
+      sendSeptTable();
+      const el = document.getElementById('chordName');
+      if (el) el.textContent = rootName(activeRoot) + after.suffix;
+    } else if (currentKey()){
+      refreshChord();
+    } else {
+      sendSeptTable();
+      updateStrum();
+    }
+  };
+  try { if (localStorage.getItem('8b8.septimal') === '1') unlockSeptimal(true); } catch(e){}
 
   buildKeyboard();
 
@@ -3317,10 +3419,21 @@ function buildMidiFile(){
   const pwOut = document.getElementById('pwShow');
   if (pwGo && pwIn){
     pwGo.onclick = () => {
+      // Words first. They are matched before any code is decoded, since the
+      // code alphabet folds O and I into digits and would mangle them.
+      const word = pwIn.value.toUpperCase().replace(/[^A-Z]/g, '');
+      if (PW_WORDS[word]){
+        const msg = PW_WORDS[word]();
+        pwNote(true, msg);
+        log('sys', msg);
+        return;
+      }
       try {
         const n = pwApply(pwIn.value);
+        pwNote(true, 'Password accepted: ' + n + ' setting(s) restored.');
         log('sys', 'Password accepted: ' + n + ' setting(s) restored.');
       } catch (err){
+        pwNote(false, 'Password rejected: ' + err.message);
         log('err', 'Password rejected: ' + err.message);
       }
     };
@@ -3517,6 +3630,26 @@ function pwDecode(code){
   return out;
 }
 
+// Words that unlock something rather than load a patch.
+const PW_WORDS = {
+  // Barbershop quartets tune the dominant seventh to 4:5:6:7; that is the
+  // ring they chase, and it is the harmonic seventh in the septimal set.
+  BARBERSHOP: () => {
+    unlockSeptimal(false);
+    return 'BARBERSHOP accepted. A Septimal switch is now beside Barry in the '
+         + 'chord matrix: hold a chord and flip it.';
+  }
+};
+
+// The outcome of a password, on the page beside the box, not only in the log.
+function pwNote(ok, msg){
+  const el = document.getElementById('pwMsg');
+  if (!el) return;
+  el.hidden = false;
+  el.className = 'pw-msg ' + (ok ? 'ok' : 'err');
+  el.textContent = (ok ? '\u2713 ' : '\u2717 ') + msg;
+}
+
 function pwApply(code){
   const deltas = pwDecode(code);
   // Built in memory and sent as one LOAD: line. Applied one at a time this
@@ -3564,7 +3697,7 @@ function captureImage(){
     },
     unlocked,
     chords: {
-      keySig, accidentalMode, altLayout, barryOn, stackOn, sharpOn, latchOn,
+      keySig, accidentalMode, altLayout, barryOn, stackOn, sharpOn, latchOn, septOn,
       inversion, spacing, chordOct, strumOct, kbOct,
       harpMode, customMask, strumLayout
     }
@@ -3635,9 +3768,12 @@ function applyImage(img){
     if (c.altLayout !== undefined) altLayout = c.altLayout;
     if (c.barryOn !== undefined) barryOn = c.barryOn;
     if (c.stackOn !== undefined) stackOn = c.stackOn;
+    // A save made with the septimal set on carries its unlock with it.
+    if (c.septOn){ unlockSeptimal(true); septOn = true; }
+    else if (c.septOn === false) septOn = false;
     if (c.sharpOn !== undefined) sharpOn = c.sharpOn;
     if (c.latchOn !== undefined) latchOn = c.latchOn;
-    [['sharpSw', sharpOn], ['barrySw', barryOn], ['stackSw', stackOn],
+    [['sharpSw', sharpOn], ['barrySw', barryOn], ['stackSw', stackOn], ['septSw', septOn],
      ['latchSw', latchOn]].forEach(([id, on]) => {
       const el = document.getElementById(id);
       if (el) el.classList.toggle('active', !!on);
@@ -3653,6 +3789,7 @@ function applyImage(img){
     relabelChords();
     // Redraws the ladder from the restored key, harp mode and octaves.
     updateStrum();
+    sendSeptTable();
   }
 
   // The unlock changes what the clock controls can reach, so a save made
