@@ -265,6 +265,11 @@ void emu_seq_start(double bpm, int steps) {
   seqRunning = true;
 }
 
+/** Any three-byte MIDI message, for bend and RPN as well as notes and CC. */
+void emu_midi_raw(int status, int d1, int d2) {
+  MidiUSB.push(midiEventPacket_t{(uint8_t)((status >> 4) & 0x0F), (uint8_t)status, (uint8_t)d1, (uint8_t)d2});
+}
+
 void emu_midi_clear() {
   midiEvs.clear();
   midiIdx = 0; midiClockS = 0.0; midiDurS = 0.0; midiRunning = false;

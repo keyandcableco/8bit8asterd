@@ -1173,7 +1173,14 @@ function attachMidiInput(inp){
     else if (cmd === 0xB0 && ready){
       // Control changes go to the firmware exactly as they would on the
       // hardware, so the CC map and MIDI Learn behave identically here.
+      // That includes the RPNs that set bend range and declare an MPE zone.
       Module.ccall('emu_cc', null, ['number','number','number'], [ch, d1, d2]);
+    }
+    else if (cmd === 0xE0 && ready){
+      // Pitch bend, per channel. Under MPE each note has a channel to itself,
+      // so this is what carries a glide in: every AY voice has its own tone
+      // period to receive it.
+      Module.ccall('emu_midi_raw', null, ['number','number','number'], [st, d1, d2]);
     }
   };
 }
