@@ -1654,7 +1654,7 @@ __EXTRA_BODY__
     <div class="log" id="log"></div>
   </div>
 
-  <footer>NO FILTERS &#9632; NO REGRETS</footer>
+  <footer><a href="https://keyandcable.com/projects.html" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">THE KEY &amp; CABLE COMPANY</a> &#9632; <a href="https://keyandcable.com/thanks.html" target="_blank" rel="noopener" style="color:inherit">SAY THANKS</a></footer>
 </div>
 
 <script>
@@ -4646,8 +4646,6 @@ buildNav();
 renderAll();
 renderCc();
 </script>
-<!-- say-thanks -->
-<p style="text-align:center;margin:28px 0 18px;font-size:14px;opacity:0.8">Made by <a href="https://keyandcable.com/projects.html" target="_blank" rel="noopener" style="color:inherit">The Key &amp; Cable Company</a> &middot; <a href="https://keyandcable.com/thanks.html" target="_blank" rel="noopener" style="color:inherit;font-weight:bold">Say thanks</a></p>
 </body>
 </html>
 """
