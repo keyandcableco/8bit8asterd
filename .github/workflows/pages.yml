@@ -1,8 +1,4 @@
-name: pages
-
-# Builds the WebAssembly emulator and publishes it, so 8b8.js and 8b8.wasm
-# never need to be committed: what is published is always built from the
-# source in this commit, and cannot drift from the firmware.
+name: Deploy web editor to GitHub Pages
 
 on:
   push:
@@ -19,50 +15,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: '3.12' }
-
-      - name: Regenerate the panels
-        run: python3 generate.py
-
-      - name: Build the social preview card
-        run: |
-          pip install --quiet Pillow
-          python3 make_social.py
-
-      - uses: mymindstorm/setup-emsdk@v14
-        with:
-          version: latest
-          actions-cache-folder: emsdk-cache
-
-      - name: Build the emulator to WebAssembly
-        run: |
-          chmod +x emulator/build-wasm.sh
-          ./emulator/build-wasm.sh
-
-      - name: Assemble the site
-        run: |
-          mkdir -p site
-          cp emulator/emulator.html site/index.html   # the emulator is the landing page
-          cp emulator/8b8.js emulator/8b8.wasm site/
-          cp emulator/social.png site/
-          cp index.html site/panel.html               # the Web Serial panel for real hardware
-          ls -la site
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
       - id: deployment
         uses: actions/deploy-pages@v4
