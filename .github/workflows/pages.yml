@@ -22,6 +22,11 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+      - name: Build the emulator core (8b8.js + 8b8.wasm)
+        run: bash emulator/build-wasm.sh
       - uses: actions/configure-pages@v5
       - name: Assemble site (emulator at root, editor at /editor/)
         run: |
@@ -30,6 +35,7 @@ jobs:
           cp -r emulator/. _site/
           mv _site/emulator.html _site/index.html
           cp index.html _site/editor/index.html
+          test -s _site/8b8.wasm && test -s _site/8b8.js || { echo "emulator core missing"; exit 1; }
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site
