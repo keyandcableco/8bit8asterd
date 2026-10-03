@@ -117,6 +117,19 @@ int main() {
   int used = 0; for (int x : m) if (x >= 0) used++;
   check(used == 9, "and all nine are dealt out again", show(m));
 
+  // ---- REGS: the registers, for a tracker view ----
+  say("PIN:off"); for (int i = 0; i < 9; i++) emu_note_off(5, 60 + i); render(0.5);
+  emu_note_on(0, 69, 100); render(0.05);
+  r = say("REGS");
+  size_t at = r.find("REGS:");
+  std::string hex = at == std::string::npos ? "" : r.substr(at + 5, 96);
+  bool ok = hex.size() == 96 && hex.find_first_not_of("0123456789ABCDEF") == std::string::npos;
+  int same = ok ? 1 : 0;
+  for (int c = 0; ok && c < 3; c++) for (int i = 0; i < 14; i++)
+    if (std::stoi(hex.substr((c * 16 + i) * 2, 2), nullptr, 16) != emu_reg(c, i)) same = 0;
+  check(ok && same, "REGS reports all three chips' registers as they are", hex);
+  emu_note_off(0, 69);
+
   printf(failures ? "pin test: %d FAILED\n" : "pin test: all passed\n", failures);
   return failures ? 1 : 0;
 }

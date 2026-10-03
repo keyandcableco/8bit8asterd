@@ -1816,6 +1816,7 @@ static void noteOn(midictrl_t chan, note_t note, midictrl_t vel) {
 //   DEFAULTS           restore defaults      -> PRESET:v0,v1,...
 //   PIN:<ch>:<voice>[:<preset>[:<legato>]]  give a channel a voice of its
 //                      own, or PIN:off       -> PIN:<mask of pinned voices>
+//   REGS               the chips' registers  -> REGS:<96 hex digits>
 // Unrecognised lines (e.g. #ifdef DEBUG logging sharing the port) are
 // ignored; the panel only acts on PRESET:/V:/SAVED: replies.
 
@@ -2477,6 +2478,22 @@ static void handleCommand(char *cmd) {
     clockUnlocked = (cmd[5] != '0');
     Serial.print(F("XCLK:"));
     Serial.println(clockUnlocked ? 1 : 0);
+  }
+  else if (strcmp(cmd, "REGS") == 0) {
+    // The three chips' registers as the driver last wrote them, sixteen a
+    // chip, two hex digits each: what a tracker view draws its channels
+    // from. Warp Zone and the wavetable write straight to the chips, past
+    // this copy, so what they do is not in it.
+    Serial.print(F("REGS:"));
+    for (uint8_t c = 0; c < 3; c++) {
+      for (uint8_t i = 0; i < 16; i++) {
+        uint8_t b = psg.lastregs[c][i];
+        uint8_t hi = b >> 4, lo = b & 15;
+        Serial.print((char)(hi < 10 ? '0' + hi : 'A' + hi - 10));
+        Serial.print((char)(lo < 10 ? '0' + lo : 'A' + lo - 10));
+      }
+    }
+    Serial.println();
   }
   else if (strcmp(cmd, "DIAG") == 0) {
     // Voice map: index:chip/what/stage/age-in-ticks. This is what to read
