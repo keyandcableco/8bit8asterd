@@ -101,3 +101,8 @@ jobs:
           g++ -std=c++17 -O2 -x c++ -Iemulator -I. \
               -Wno-narrowing emulator/host.cpp emulator/temper_test.cpp -o /tmp/tempertest
           /tmp/tempertest
+      - name: Pinned voices check
+        run: |
+          g++ -std=c++17 -O2 -x c++ -Iemulator -I. \
+              -Wno-narrowing emulator/host.cpp emulator/pin_test.cpp -o /tmp/pintest
+          /tmp/pintest

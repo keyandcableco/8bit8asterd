@@ -650,6 +650,37 @@ static const ToneParams tones[MAX_TONES] PROGMEM = {
 static ushort g_lastMelodicPitch = 0;
 
 // ---------------------------------------------------------------------------
+// Pinned voices
+// ---------------------------------------------------------------------------
+// A MIDI channel can be given one of the nine voices to itself: every note on
+// that channel plays on that voice, and nothing else is allocated to it, so
+// drums, the harp's strings, unison twins and drawbar stops never take it.
+// Made for a controller that sends each chord voice on its own channel (the
+// minichord's MPE output, chord voices on channels 2-5 bottom to top with
+// voice leading on): the bass is always the same oscillator, so a chord change
+// is four lines moving rather than four notes restruck.
+//
+// A pinned voice glides from its OWN last pitch, so with Glide up each line
+// slides to its next note, rather than everything sliding in from whichever
+// note happened to start last. Legato goes further and keeps the envelope
+// going across the change, so the line is one long note that moves.
+//
+// Set over serial, kept across All Notes Off and preset loads, cleared on
+// reset. One byte per channel:
+//   bits 0-3  the voice, 0..8; PIN_NONE when the channel is not pinned
+//   bits 4-5  the envelope preset (tones[]) for this channel, when bit 6 is set
+//   bit 6     use bits 4-5 rather than the usual choice
+//   bit 7     legato
+#define PIN_NONE   0x0F
+#define PIN_TONE   0x40
+#define PIN_LEGATO 0x80
+static uint8_t  lanePin[16];
+static uint16_t pinnedMask = 0;      // bit v: voice v is pinned to some channel
+
+static inline uint8_t pinVoice(uint8_t ch) { return lanePin[ch & 15] & 0x0F; }
+static inline bool isPinned(uint8_t v) { return (pinnedMask >> v) & 1; }
+
+// ---------------------------------------------------------------------------
 // Pitch bend, per channel
 // ---------------------------------------------------------------------------
 // One bend per channel is what MIDI 1.0 offers. Under MPE a note has a channel
@@ -810,6 +841,9 @@ public:
 
   void start(note_t note, midictrl_t vel, midictrl_t chan) {
     m_midiChan = (uint8_t)(chan & 15);
+    const uint8_t pin = lanePin[m_midiChan];
+    const bool pinned = (pin & 0x0F) == m_chan;   // m_chan is this voice's number
+    const ushort ownLast = m_target;               // where this voice last was
     // Full level unless a drawbar stop overrides it after this returns. Set
     // here rather than only where the voice is constructed, so a voice that
     // once carried a stop does not stay quiet when reused for a plain note.
@@ -823,8 +857,11 @@ public:
       tp.sustain = params[P_ENV_SUSTAIN];
       tp.rel     = params[P_ENV_RELEASE];
     } else {
-      // Under MPE the channel is a bend lane, not a preset selector.
-      memcpy_P(&tp, &tones[mpeMode ? 0 : (chan % MAX_TONES)], sizeof(ToneParams));
+      // Under MPE the channel is a bend lane, not a preset selector, unless
+      // the channel is pinned with a preset of its own.
+      uint8_t t = (pinned && (pin & PIN_TONE)) ? ((pin >> 4) & 3)
+                : mpeMode ? 0 : (chan % MAX_TONES);
+      memcpy_P(&tp, &tones[t], sizeof(ToneParams));
     }
 
     if (params[P_VEL_SENSE] == 0) {
@@ -835,12 +872,18 @@ public:
 
     // Glide: start from wherever the previous note's pitch was and slew
     // toward the target in update100Hz(). 0 = jump straight there.
-    if (params[P_GLIDE] > 0 && g_lastMelodicPitch > 0) {
-      m_pitch = g_lastMelodicPitch;
+    // A pinned voice is a line of its own: it slides from its own last note,
+    // and leaves the shared starting point to the unpinned notes.
+    if (pinned) {
+      m_pitch = (params[P_GLIDE] > 0 && ownLast > 0) ? m_pitch : m_target;
     } else {
-      m_pitch = m_target;
+      if (params[P_GLIDE] > 0 && g_lastMelodicPitch > 0) {
+        m_pitch = g_lastMelodicPitch;
+      } else {
+        m_pitch = m_target;
+      }
+      g_lastMelodicPitch = m_target;
     }
-    g_lastMelodicPitch = m_target;
     m_age = 0;
 
     m_vel = 768 + (vel << 1);
@@ -857,9 +900,17 @@ public:
     // quietly collapsed the sustain level.
     m_sustain = (int)(((long)m_vel * tp.sustain) >> 5);
 
-    m_ampl  = 0;
-    m_envAcc = 0;
-    m_adsr  = 'A';
+    if (pinned && (pin & PIN_LEGATO) && m_ampl > 0 && m_adsr != 'X') {
+      // Legato: the line is still sounding (a release only just begun), so
+      // the envelope carries on from where it is to the new note's sustain.
+      if (m_ampl < m_sustain) m_ampl = m_sustain;
+      m_adsr = (m_ampl > m_sustain) ? 'D' : 'S';
+      m_envAcc = 0;
+    } else {
+      m_ampl  = 0;
+      m_envAcc = 0;
+      m_adsr  = 'A';
+    }
 
     psg.setTone(m_chan, m_pitch, m_ampl >> 6);
   }
@@ -1139,11 +1190,11 @@ static void freeVoice(uint8_t v) {
 static uint8_t findFreeVoice(int8_t preferChip) {
   if (preferChip >= 0) {
     for (uint8_t i = 0; i < MAX_VOICES; i++) {
-      if (m_playing[i] == NO_NOTE && (int8_t)(i % 3) == preferChip) return i;
+      if (m_playing[i] == NO_NOTE && !isPinned(i) && (int8_t)(i % 3) == preferChip) return i;
     }
   }
   for (uint8_t i = 0; i < MAX_VOICES; i++) {
-    if (m_playing[i] == NO_NOTE) return i;
+    if (m_playing[i] == NO_NOTE && !isPinned(i)) return i;
   }
   return NO_VOICE;
 }
@@ -1194,6 +1245,7 @@ static uint8_t pickStealVoice() {
   uint16_t aR = 0, aP = 0, aM = 0, aA = 0;
 
   for (uint8_t i = 0; i < MAX_VOICES; i++) {
+    if (isPinned(i)) continue;               // a pinned voice belongs to its channel
     uint8_t idx = m_playing[i];
     if (idx == NO_NOTE) return i;            // something freed up meanwhile
     uint16_t age = voices[i].m_age;
@@ -1253,7 +1305,18 @@ static void addDrawbar(ushort idx, uint8_t stop, uint8_t level) {
 }
 
 static bool startNote(ushort idx) {
-  uint8_t v = claimVoice(-1);
+  uint8_t v = pinVoice(m_chan[idx]);
+  if (v < MAX_VOICES) {
+    // The channel's own voice. Whatever it still holds is this channel's last
+    // note (a new one arriving before the old one's note-off): handed over,
+    // and under legato not even silenced.
+    if (m_playing[v] != NO_NOTE) {
+      if (!(lanePin[m_chan[idx] & 15] & PIN_LEGATO)) voices[v].kill();
+      freeVoice(v);
+    }
+  } else {
+    v = claimVoice(-1);
+  }
   if (v == NO_VOICE) return false;
 
   voices[v].start(MIDI_MIN + idx, m_velocity[idx], m_chan[idx]);
@@ -1751,6 +1814,8 @@ static void noteOn(midictrl_t chan, note_t note, midictrl_t vel) {
 //   LOAD:v0,v1,...     apply a full preset   -> PRESET:v0,v1,...
 //   SAVE               persist to EEPROM     -> SAVED:1
 //   DEFAULTS           restore defaults      -> PRESET:v0,v1,...
+//   PIN:<ch>:<voice>[:<preset>[:<legato>]]  give a channel a voice of its
+//                      own, or PIN:off       -> PIN:<mask of pinned voices>
 // Unrecognised lines (e.g. #ifdef DEBUG logging sharing the port) are
 // ignored; the panel only acts on PRESET:/V:/SAVED: replies.
 
@@ -2370,6 +2435,38 @@ static void handleCommand(char *cmd) {
     Serial.print(F("PCT:"));
     Serial.println(pcTuneOn ? 1 : 0);
   }
+  else if (strncmp(cmd, "PIN:", 4) == 0) {
+    // PIN:off, or PIN:<channel>:<voice>[:<preset>[:<legato>]]. Channel 0-15,
+    // voice 0-8 (anything else unpins the channel), preset 0-3 or anything
+    // else for the usual one, legato 0 or 1. Replies PIN:<mask of pinned voices>.
+    if (strcmp(cmd + 4, "off") == 0) {
+      memset(lanePin, 0xFF, sizeof lanePin);
+    } else {
+      const char *q = cmd + 4;
+      uint8_t f[4] = { 0, 0xFF, 0xFF, 0 };
+      for (uint8_t i = 0; i < 4 && *q; i++) {
+        f[i] = (uint8_t)atoi(q);
+        while (*q && *q != ':') q++;
+        if (*q == ':') q++;
+      }
+      uint8_t ch = f[0] & 15, v = f[1];
+      uint8_t b = 0xFF;
+      if (v < MAX_VOICES) {
+        b = v;
+        if (f[2] < MAX_TONES) b |= (uint8_t)((f[2] << 4) | PIN_TONE);
+        if (f[3]) b |= PIN_LEGATO;
+        // A voice belongs to one channel: any other holding it lets go.
+        for (uint8_t c = 0; c < 16; c++) if (c != ch && pinVoice(c) == v) lanePin[c] = 0xFF;
+        // Taken over clean: whatever was sounding on it stops now.
+        if (m_playing[v] != NO_NOTE) { voices[v].kill(); freeVoice(v); }
+      }
+      lanePin[ch] = b;
+    }
+    pinnedMask = 0;
+    for (uint8_t c = 0; c < 16; c++) if (pinVoice(c) < MAX_VOICES) pinnedMask |= (uint16_t)1 << pinVoice(c);
+    Serial.print(F("PIN:"));
+    Serial.println(pinnedMask);
+  }
   else if (strncmp(cmd, "MPE:", 4) == 0) {
     mpeMode = (cmd[4] != '0');
     if (mpeMode) mpeRange();
@@ -2401,7 +2498,9 @@ static void handleCommand(char *cmd) {
       else if (idx == PERC_NOTE) Serial.print(F("perc"));
       else { Serial.print('n'); Serial.print(MIDI_MIN + idx); }
       Serial.print('/');
-      Serial.print((char)voices[i].m_adsr);
+      // A voice never started has no stage yet: '-', not a NUL, which ends
+      // the line early for anything reading it as a string.
+      Serial.print(voices[i].m_adsr ? (char)voices[i].m_adsr : '-');
       Serial.print('/');
       Serial.print(voices[i].m_age);
       Serial.print(' ');
@@ -2666,6 +2765,7 @@ void setup() {
   paintFreeRam();
   waveTimerInit();
   bendReset();
+  memset(lanePin, 0xFF, sizeof lanePin);   // no channel pinned
   // Power-up clears this on the hardware, but the emulator re-runs setup()
   // on every restart of the audio without clearing globals.
   pcTuneOn = false;
