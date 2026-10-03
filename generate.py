@@ -426,7 +426,7 @@ PRESETS = {
 
 # Where the published site lives. The social preview needs ABSOLUTE urls --
 # Reddit, Discord and the rest will not resolve a relative one.
-SITE_URL = "https://keyandcableco.github.io/8bit8asterd"
+SITE_URL = "https://8b8.keyandcable.com"
 SITE_HOME = "https://keyandcable.com"
 SITE_TITLE = "The 8Bit 8asterd"
 SITE_DESC = ("A 9-voice chiptune synth built on three AY-3-8910 chips. "
