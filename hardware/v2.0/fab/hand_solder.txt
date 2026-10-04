@@ -1,0 +1,15 @@
+Through-hole parts, not in the SMT assembly files.
+Add them to the JLC order as through-hole assembly, or solder by hand.
+
+U7    YM2149 / AY-3-8910   DIP-40_W15.24mm_Socket                                     LCSC C2332
+U8    YM2149 / AY-3-8910   DIP-40_W15.24mm_Socket                                     LCSC C2332
+U9    YM2149 / AY-3-8910   DIP-40_W15.24mm_Socket                                     LCSC C2332
+J2    AUDIO OUT            PhoenixContact_MC_1,5_2-G-3.5_1x02_P3.50mm_Horizontal      LCSC C395830
+J3    MIDI IN              PhoenixContact_MC_1,5_2-G-3.5_1x02_P3.50mm_Horizontal      LCSC C395830
+J4    ANALOG IN            PhoenixContact_MC_1,5_10-G-3.5_1x10_P3.50mm_Horizontal     LCSC C430562
+J5    SWITCH IN            PhoenixContact_MC_1,5_10-G-3.5_1x10_P3.50mm_Horizontal     LCSC C430562
+
+Plus your three YM2149 / AY-3-8910 chips in U7, U8, U9 (pin 1 at the square pad).
+The terminal blocks are pluggable headers: buy matching 3.5 mm plugs
+(DORABO DB2EK-3.5-10P-GN-S, LCSC C395846, x2; DB2EK-3.5-2P-GN-S,
+LCSC C395828, x2) for the wires.
