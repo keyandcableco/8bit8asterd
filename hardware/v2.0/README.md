@@ -131,3 +131,11 @@ firmware: GPIO*n* still drives DA*n*.
    differs.
 3. **/A9, A8 and /SEL are left open, as on v1.0.** The chips pull them to the
    normal state. Tie them explicitly if you prefer.
+
+## License
+
+Copyright © 2026 Greg Miller / The Key & Cable Company.
+
+The v2 hardware design files are licensed under the [CERN Open Hardware Licence Version 2 – Strongly Reciprocal (CERN-OHL-S-2.0)](../../LICENSE-HARDWARE). You can make, modify, sell and share hardware from them. If you share a modified design, or ship hardware made from one, you have to publish your design files under the same licence. The firmware is GPL-3.0 (see [LICENSE](../../LICENSE)).
+
+Source location: <https://github.com/keyandcableco/8bit8asterd>
